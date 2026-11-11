@@ -6,8 +6,7 @@ Radio uruguaya sin tandas: elegís hasta tres emisoras, una es la favorita, y RA
 
 - **Anticipación.** Escuchás con unos segundos de retraso (12 por defecto). RADIA analiza el vivo, así que ve la tanda antes de que te llegue y cambia en el borde.
 - **Detección.** Tres señales: análisis de audio (salto de volumen, brillo y silencios cortos entre avisos), horarios de tanda aprendidos por emisora y el botón "Esto es publicidad".
-- **Match por franja.** Cada emisora tiene un tipo de contenido por franja horaria. El match decide a qué emisora ir cuando la que suena entra en tanda.
-- **Una sola emisora al aire.** Nunca suenan dos a la vez. En cada cambio la que está al aire se apaga, pasa el audio logo de RADIA (barrido de sintonizador, dos notas y la locutora: "Radia sintoniza Océano FM", unos 2 s) y recién entonces entra la otra. También suena al tocar Reproducir.
+- **Match por franja.** Cada emisora tiene un tipo de contenido por franja horaria. A menor match, transición más corta; por debajo de 40 % no se mezclan las señales.
 - **Favorita.** Siempre se vuelve a ella cuando termina su tanda, salvo que elijas otra a mano.
 
 ## Radios incluidas
@@ -42,6 +41,10 @@ Sin análisis de audio no hay cambio automático, y muchas radios no dejan que e
 
 El puente solo acepta los servidores de las radios del catálogo. No está probado todavía contra las radios reales.
 
+## Motor de audio propio (necesario en iPhone)
+
+En iPhone, Safari y Chrome comparten motor, y ese motor tiene un defecto conocido (WebKit 180696): cuando una radio en vivo se conecta al analizador, suena bien pero el analizador recibe solo ceros. Por eso RADIA no usa el reproductor del navegador para las radios analizables: baja el stream, lo parte en cuadros MP3 o AAC (`src/stream.js`), lo decodifica y lo reproduce con Web Audio, empalmando los trozos con un fundido de 8 ms. Si la radio no da permiso de lectura, cae al reproductor del navegador y suena sin análisis.
+
 ## Cómo detecta la tanda (v2)
 
 Las radios procesan el audio para que todo suene parejo, así que el volumen no delata la publicidad. RADIA mide cada segundo la forma del sonido (8 bandas) y busca cortes de timbre. Una tanda es una sucesión de segmentos cortos (6 a 45 s) de sonido distinto que no vuelve al sonido anterior. Necesita oír unos 30 s para confirmarla; por eso el margen es de 45 s.
@@ -70,7 +73,5 @@ Hosting gratuito: sirve un plan gratis tipo Render para uso personal, con dos sa
 
 - El detector de audio está validado con la demo sintética, no con radios reales. Sus umbrales van a necesitar ajuste con audio real.
 - Sin puente, las radios que no permiten análisis suenan sin anticipación: dependen de horarios aprendidos y avisos manuales.
-- En iPhone, iPad y Safari el navegador no le entrega a Web Audio el audio de un stream en vivo: no se puede analizar ni callar con ganancias. Ahí RADIA abre solo la emisora que suena (un único reproductor, imposible que haya dos a la vez) y cambia por horario aprendido, por el botón "Esto es publicidad" o a mano; no hay anticipación automática. Ese modo se puede probar en cualquier navegador agregando `?directo` a la dirección. No está probado en un iPhone real.
-- En los demás navegadores las otras emisoras se abren en segundo plano (calladas) solo después de comprobar que el análisis recibe audio de verdad. Si no lo recibe, RADIA pasa sola al modo de una sola conexión.
-- La locutora es la voz en español del dispositivo (se elige una femenina si hay). Si no hay ninguna voz en español, el audio logo queda solo con el sintonizador y las dos notas.
+- En iPhone, Safari limita el audio en segundo plano y el control de volumen de varios streams a la vez. No está probado ahí con radios reales.
 - Los perfiles por franja del catálogo de demostración son aproximados y se editan desde Emisoras.
