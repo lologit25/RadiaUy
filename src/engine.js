@@ -64,10 +64,13 @@
     for (const [cat, re] of RULES) if (re.test(text)) return cat;
     return 'pop';
   }
-  /** Dos emisoras nunca suenan juntas: la que está al aire se apaga (out), pasa el audio logo de RADIA (ident, "Radia sintoniza …")
-      y recién ahí entra la otra (in). El match ya no cambia la forma del cambio: sigue eligiendo a qué emisora ir. */
-  const CHANGE = { out: .35, ident: 2.2, in: .45 };
-  function transitionStyle() { return { mode: 'ident', dur: CHANGE.out, gap: CHANGE.ident }; }
+  /** Cuanto menor el match, más corta la transición; por debajo de 40 no se mezclan las dos señales. */
+  function transitionStyle(m, o = {}) {
+    if (o.bothTalk) return { mode: 'cross', dur: 1.2 };
+    if (m >= 70) return { mode: 'cross', dur: 3 };
+    if (m >= 40) return { mode: 'cross', dur: 1.8 };
+    return { mode: 'dip', dur: 1.6 };
+  }
 
   // ---------- horarios aprendidos (probabilidad de tanda por minuto de la hora) ----------
   class Schedule {
@@ -241,11 +244,12 @@
     clean(s, now) { return s.ok !== false && this.tta(s, now) > Math.min(8, Math.max(0, (s.delay || 0) - 2)); }
     matchOf(a, b) { return match(a.category, b.category, { talkA: a.brain.talk, talkB: b.brain.talk }); }
     styleOf(a, b) {
-      return Object.assign({ match: this.matchOf(a, b) }, transitionStyle());
+      const m = this.matchOf(a, b);
+      return Object.assign({ match: m }, transitionStyle(m, { bothTalk: vec(a.category)[0] > .6 && vec(b.category)[0] > .6 }));
     }
     _go(to, style, reason, now) {
       const from = this.current; this.current = to.id; this.returnSince = null; this.ducked = false;
-      this.lockUntil = now + style.dur + (style.gap || 0) + this.dwell;     // el audio logo también cuenta: nada de cambiar encima de él
+      this.lockUntil = now + style.dur + this.dwell;
       return { type: 'switch', from, to: to.id, style, reason };
     }
     /** Cambio pedido por el usuario. */
@@ -273,5 +277,5 @@
     }
   }
 
-  return { SLOTS, CATS, CHANGE, slotAt, match, categoryAt, inferCategory, transitionStyle, Schedule, Brain, Director, clamp };
+  return { SLOTS, CATS, slotAt, match, categoryAt, inferCategory, transitionStyle, Schedule, Brain, Director, clamp };
 });
