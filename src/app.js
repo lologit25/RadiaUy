@@ -43,12 +43,15 @@
 
   // ---------- estado guardado en el dispositivo ----------
   const KEY = 'radia.v1';
+  const BRIDGE = '';                       // dirección del puente incluida en esta publicación (vacío = sin puente)
   const IN_CLAUDE = /claude|anthropic/i.test(location.hostname) || /claude/i.test(document.referrer);
   const DEF = () => ({ mode: IN_CLAUDE ? 'demo' : 'live', favs: { demo: ['d-oceano', 'd-delsol', 'd-azul'], live: [] }, main: { demo: 'd-oceano', live: null },
-    delay: 12, proxy: '', profiles: {}, custom: [], sched: {}, probe: {}, stats: { avoided: 0, heard: 0, switches: 0 }, catalog: [], catalogAt: 0 });
+    delay: 45, v: 3, proxy: '', profiles: {}, custom: [], sched: {}, probe: {}, stats: { avoided: 0, heard: 0, switches: 0 }, catalog: [], catalogAt: 0 });
   let S = DEF();
-  try { const j = JSON.parse(localStorage.getItem(KEY) || 'null'); if (j && j.favs && j.main) { S = Object.assign(S, j); S.probe = S.probe || {}; } } catch (e) { /* sin almacenamiento: se sigue en memoria */ }
+  try { const j = JSON.parse(localStorage.getItem(KEY) || 'null'); if (j && j.favs && j.main) { S = Object.assign(S, j); S.probe = S.probe || {}; if (j.v !== 3) { S.delay = 45; S.v = 3; S.probe = {}; } } } catch (e) { /* sin almacenamiento: se sigue en memoria */ }
   const save = () => { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { /* idem */ } };
+  const PX = () => S.proxy || BRIDGE;
+  const lookahead = () => S.mode === 'demo' ? 12 : S.delay;
   const scheds = {};
   const sched = id => scheds[id] || (scheds[id] = new E.Schedule(S.sched[id]));
 
@@ -93,7 +96,7 @@
   const artText = st => { const p = (st.freq || '').split(' '); if (p[0]) return [p[0], p[1] || '']; return [st.name.replace(/radio|fm|am/gi, '').trim().slice(0, 2).toUpperCase() || 'FM', '']; };
   function blocked(st) {
     if (st.demo) return '';
-    if (location.protocol === 'https:' && !S.proxy && !st.urls.some(u => /^https:/.test(u))) return 'Necesita el puente de audio';
+    if (location.protocol === 'https:' && !PX() && !st.urls.some(u => /^https:/.test(u))) return 'Necesita el puente de audio';
     if (st.hls && !document.createElement('audio').canPlayType('application/vnd.apple.mpegurl')) return 'Formato no compatible con este navegador';
     return '';
   }
@@ -214,12 +217,22 @@
 
   function graph(ch) {
     const c = P.ctx; ch.input = c.createGain(); ch.an = c.createAnalyser(); ch.an.fftSize = 1024; ch.an.smoothingTimeConstant = .3;
-    ch.dl = c.createDelay(Math.max(1, S.delay + 1)); ch.dl.delayTime.value = S.delay; ch.g = c.createGain(); ch.g.gain.value = 0;
-    ch.input.connect(ch.an); ch.input.connect(ch.dl); ch.dl.connect(ch.g); ch.g.connect(P.master); ch.delay = S.delay;
+    ch.look = lookahead(); ch.dl = c.createDelay(ch.look + 1); ch.dl.delayTime.value = ch.look;
+    ch.gL = c.createGain(); ch.gD = c.createGain(); ch.gL.gain.value = ch.gD.gain.value = 0;
+    ch.input.connect(ch.an); ch.input.connect(ch.gL); ch.gL.connect(P.master);        // directo: suena ya, sin anticipación
+    ch.input.connect(ch.dl); ch.dl.connect(ch.gD); ch.gD.connect(P.master);           // demorado: da margen para ver venir la tanda
+    ch.g = ch.gL; ch.delay = 0; ch.liveAt = null;
   }
-  function ungraph(ch) { for (const k of ['src', 'input', 'an', 'dl', 'g']) if (ch[k]) { try { ch[k].disconnect(); } catch (e) { /* ya suelto */ } ch[k] = null; } ch.delay = 0; }
-  const usable = st => st.urls.filter(u => S.proxy || location.protocol !== 'https:' || /^https:/.test(u));
-  const via = u => S.proxy ? S.proxy.replace(/\/+$/, '') + '/s?u=' + encodeURIComponent(u) : u;
+  /** Al entrar a una emisora: usa la salida demorada si ya juntó margen; si no, la directa. */
+  function tap(ch) {
+    if (!ch.an) return;
+    const use = ch.delay ? ch.gD : ch.gL, other = ch.delay ? ch.gL : ch.gD, t = P.ctx.currentTime;
+    try { other.gain.cancelScheduledValues(t); other.gain.setValueAtTime(0, t); } catch (e) { /* nada */ }
+    ch.g = use;
+  }
+  function ungraph(ch) { ch.g = null; for (const k of ['src', 'input', 'an', 'dl', 'gL', 'gD']) if (ch[k]) { try { ch[k].disconnect(); } catch (e) { /* ya suelto */ } ch[k] = null; } ch.delay = 0; }
+  const usable = st => st.urls.filter(u => PX() || location.protocol !== 'https:' || /^https:/.test(u));
+  const via = u => PX() ? PX().replace(/\/+$/, '') + '/s?u=' + encodeURIComponent(u) : u;
   function openStream(ch, cors, k = 0) {
     const list = usable(ch.st);
     if (k >= list.length) { if (cors) return openStream(ch, false, 0); ch.ok = false; ch.live = false; note(ch.id, { ok: false }); return; }
@@ -228,7 +241,7 @@
     ch.el = el; ch.live = false;
     if (cors) { graph(ch); ch.src = P.ctx.createMediaElementSource(el); ch.src.connect(ch.input); }
     else { el.muted = !(ch.target > 0); try { el.volume = ch.target > 0 ? 1 : 0; } catch (e) { /* iPhone */ } }
-    el.addEventListener('playing', () => { ch.live = true; ch.ok = true; note(ch.id, { ok: true, cors: !!cors }); });
+    el.addEventListener('playing', () => { if (!ch.live && ch.an) ch.liveAt = P.ctx.currentTime; ch.live = true; ch.ok = true; note(ch.id, { ok: true, cors: !!cors }); });
     const fail = () => {
       if (ch.el !== el) return; clearTimeout(ch.wd);
       if (cors) ungraph(ch); el.removeAttribute('src'); try { el.load(); } catch (e) { /* nada */ }
@@ -243,7 +256,7 @@
     const ch = { id: st.id, st, demo, ok: true, delay: 0, target: 0, category: catOf(st), brain: new E.Brain(demo ? { maxBreak: 60, breakLen: 20 } : {}) };
     if (blocked(st)) { ch.ok = false; return ch; }
     if (demo) {
-      graph(ch); ch.live = true;
+      graph(ch); ch.live = true; ch.liveAt = P.ctx.currentTime;
       const order = isMain ? 0 : i + (i < P.mainIndex ? 1 : 0);
       ch.synth = new Synth(P.ctx, ch.input, P.noise, { category: ch.category, seed: hue(st) + 3, period: [80, 95, 110][order], adLen: [22, 24, 20][order], firstAd: [22, 75, 125][order] });
     } else openStream(ch, true);
@@ -309,6 +322,7 @@
   function persist() { for (const id in scheds) S.sched[id] = scheds[id].toJSON(); save(); }
 
   const tbuf = new Float32Array(1024), fbuf = new Float32Array(512);
+  const EDGES = [50, 100, 200, 400, 800, 1600, 3200, 6400, 12000];
   function features() {
     const t = P.ctx.currentTime, hzPerBin = P.ctx.sampleRate / 1024;
     for (const ch of P.chans) {
@@ -316,7 +330,13 @@
       ch.an.getFloatTimeDomainData(tbuf); let s = 0; for (let i = 0; i < 1024; i++) s += tbuf[i] * tbuf[i];
       ch.an.getFloatFrequencyData(fbuf); let num = 0, den = 0;
       for (let i = 1; i < 512; i++) { const m = Math.pow(10, fbuf[i] / 20); num += i * m; den += m; }
-      ch.brain.pushFrame({ t, db: 10 * Math.log10(s / 1024 + 1e-12), centroid: den ? num / den * hzPerBin : 0 });
+      const bands = [];
+      for (let k = 0; k < 8; k++) {
+        const lo = Math.max(1, Math.round(EDGES[k] / hzPerBin)), hi = Math.min(511, Math.max(lo + 1, Math.round(EDGES[k + 1] / hzPerBin))); let pw = 0;
+        for (let i = lo; i < hi; i++) pw += Math.pow(10, fbuf[i] / 10);
+        bands.push(10 * Math.log10(pw / (hi - lo) + 1e-12));
+      }
+      ch.brain.pushFrame({ t, db: 10 * Math.log10(s / 1024 + 1e-12), centroid: den ? num / den * hzPerBin : 0, bands });
     }
   }
   function control() {
@@ -324,12 +344,14 @@
     for (const ch of P.chans) {
       ch.category = E.categoryAt(ch.st, h);
       if (ch.synth) ch.synth.pump(); else if (ch.ok) ch.brain.tickClock(now, minute, sched(ch.id));
+      if (ch.an && ch.id !== P.dir.current) ch.delay = ch.liveAt != null && now - ch.liveAt >= ch.look + 1 ? ch.look : 0;
     }
     const a = P.dir.tick(now); if (a) apply(a);
   }
   function apply(a) {
     if (a.type === 'switch') {
       const f = chan(a.from), t = chan(a.to), d = a.style.dur;
+      tap(t);
       if (a.style.mode === 'cross') { setGain(f, 0, d); setGain(t, 1, d); } else { setGain(f, 0, d / 2); setGain(t, 1, d / 2, d / 2); }
       S.stats.switches++;
       const txt = a.reason === 'ad' ? (f.ok === false ? f.st.name + ' quedó sin señal.' : 'Tanda en ' + f.st.name + '.') + ' Pasamos a ' + t.st.name + ', match ' + a.style.match + '%.'
@@ -344,6 +366,7 @@
     if (P.dir.inAd(cur, now)) S.stats.heard++;
     else if (cur !== main && (P.dir.inAd(main, now) || main.ok === false)) S.stats.avoided++;
     if (cur.synth && cur.synth.isAd(now - cur.delay)) P.truth++;
+    diagTick(now);
     if (S.mode === 'live') { const d = new Date(Date.now() - 8000); for (const ch of P.chans) if (ch.live) sched(ch.id).observe(d.getMinutes(), ch.brain.isAdAt(now - 8), 1); if (Math.round(now) % 30 === 0) persist(); }
     else if (Math.round(now) % 15 === 0) save();
   }
@@ -353,6 +376,47 @@
       navigator.mediaSession.metadata = new MediaMetadata({ title: curChan().st.name, artist: 'RADIA', album: 'Sin publicidad' });
       navigator.mediaSession.setActionHandler('play', play); navigator.mediaSession.setActionHandler('pause', stop);
     } catch (e) { /* sin controles del sistema */ }
+  }
+
+  // ---------- qué radios dejan analizar su audio ----------
+  let scanning = false;
+  async function probeOne(st) {
+    const u = usable(st)[0]; if (!u) return;
+    const hit = async mode => {
+      const c = new AbortController(), to = setTimeout(() => c.abort(), 8000);
+      try { const r = await fetch(via(u), { mode, signal: c.signal, cache: 'no-store' }); clearTimeout(to); c.abort(); return mode === 'no-cors' || r.ok; }
+      catch (e) { clearTimeout(to); return false; }
+    };
+    const w = PX() ? 1 : 0;
+    if (await hit('cors')) return note(st.id, { ok: true, cors: true, via: w });
+    if (!w && await hit('no-cors')) return note(st.id, { ok: true, cors: false, via: w });
+    note(st.id, { ok: false, via: w });
+  }
+  async function scan(force) {
+    if (S.mode !== 'live' || IN_CLAUDE || scanning) return;
+    const w = PX() ? 1 : 0, fresh = st => { const p = S.probe[st.id]; return p && p.via === w && Date.now() - p.at < 3 * 864e5; };
+    const todo = stations().filter(st => !blocked(st) && (force || !fresh(st))); if (!todo.length) return;
+    scanning = true; let i = 0;
+    const run = async () => { while (i < todo.length) { await probeOne(todo[i++]); if (i % 8 === 0) renderStations(); } };
+    await Promise.all([run(), run(), run(), run()]); scanning = false; renderStations();
+  }
+
+  // ---------- diagnóstico para calibrar con radios reales ----------
+  const DG = { rows: [], marks: [] };
+  function diagTick(now) {
+    if (Math.round(now) % 2) return;
+    P.chans.forEach((ch, i) => {
+      if (!ch.an || !ch.live) return; const B = ch.brain.blocks, b = B[B.length - 1]; if (!b) return;
+      const nv = B[B.length - ch.brain.o.seg];
+      DG.rows.push([Math.round(now), i, Math.round(ch.brain.frames.length ? ch.brain.frames[ch.brain.frames.length - 1].db : 0), Math.round(b.talk * 100), nv ? Math.round(nv.nov * 10) : 0, b.shape.map(Math.round).join(','), ch.brain.isAdAt(now) ? 'A' : '-'].join('|'));
+    });
+    if (DG.rows.length > 540) DG.rows.splice(0, DG.rows.length - 540);
+  }
+  function diagText() {
+    const now = P.ctx ? Math.round(P.ctx.currentTime) : 0;
+    const head = { radia: 3, ua: navigator.userAgent, modo: S.mode, margen: lookahead(), puente: !!PX(), ahora: now, suena: P.dir ? P.dir.current : null, marcas: DG.marks,
+      radios: P.chans.map(c => ({ n: c.st.name, analiza: !!c.an, senal: c.ok !== false && !!c.live, demora: c.delay, cortes: c.brain.cuts.map(Math.round), tandas: c.brain.iv.map(v => [Math.round(v.s), v.e == null ? null : Math.round(v.e), v.src]) })) };
+    return 'RADIA-DIAG ' + JSON.stringify(head) + '\n' + DG.rows.join('\n');
   }
 
   // ---------- probar una emisora ----------
@@ -410,13 +474,15 @@
       else if (cur.ok && !cur.live) html = 'Conectando con ' + esc(cur.st.name) + '…';
       else if (t < Infinity && t > 0) { html = '<b>Tanda detectada.</b> Cambio en ' + Math.max(1, Math.round(t)) + ' s.'; warn = true; }
       else if (cur !== main) html = esc(main.st.name) + (main.ok === false ? ' está sin señal.' : ' está en tanda. Volvemos apenas termine.');
-      else html = cur.delay ? '<b>Sin publicidad a la vista.</b> Vas ' + cur.delay + ' s detrás del vivo.' : '<b>Sonando.</b> Esta radio no deja analizar su audio: RADIA usa los horarios aprendidos y tus avisos.';
+      else html = cur.delay ? '<b>Sin publicidad a la vista.</b> Vas ' + cur.delay + ' s detrás del vivo.'
+        : cur.an ? '<b>En directo.</b> RADIA ya analiza esta radio; la anticipación empieza con el primer cambio.'
+        : '<b>Sonando sin análisis.</b> Esta radio no deja analizar su audio: no hay cambio automático sin el puente.';
     }
     st.innerHTML = html; st.classList.toggle('is-warn', warn);
     // radar
     $('#radar').innerHTML = list.map(s => {
       const ch = chan(s.id), isMain = s.id === mainId(), m = matchWithMain(s);
-      let blocks = '', cls = '', blind = !ch || !ch.delay;
+      let blocks = '', cls = '', blind = !ch || !ch.an;
       if (ch) {
         const heard = now - ch.delay, span = ch.delay || 1;
         if (ch.delay) for (const iv of ch.brain.iv) { const a = E.clamp((iv.s - heard) / span), b = E.clamp(((iv.e == null ? now : Math.min(iv.e, now)) - heard) / span); if (b > a) blocks += '<i style="left:' + (a * 100).toFixed(1) + '%;width:' + ((b - a) * 100).toFixed(1) + '%"></i>'; }
@@ -429,7 +495,7 @@
         '<span class="lane-meta' + (m != null && m < 40 ? ' is-low' : '') + '">' + esc(meta) + '</span>' +
         '<span class="track' + (P.playing && blind ? ' is-blind' : '') + '">' + blocks + '</span></button>';
     }).join('') || '<div class="empty">Sumá emisoras desde la pestaña Emisoras.</div>';
-    $('#radarKey').hidden = !list.length; $('#keyLive').textContent = 'El vivo, ' + S.delay + ' s adelante';
+    $('#radarKey').hidden = !list.length; $('#keyLive').textContent = 'El vivo, ' + lookahead() + ' s adelante';
     // contadores
     $('#stAvoided').textContent = mmss(S.stats.avoided); $('#stSwitches').textContent = S.stats.switches;
     const demoPlaying = P.playing && S.mode === 'demo';
@@ -458,17 +524,21 @@
     const low = list.filter(s => { const m = matchWithMain(s); return m != null && m < 40; });
     $('#favNote').textContent = low.length ? 'Match bajo con ' + low.map(s => s.name).join(' y ') + ' en esta franja: el cambio se va a notar. RADIA lo hace corto y sin mezclar.'
       : list.length ? 'La estrella marca la favorita: RADIA siempre vuelve a ella cuando termina su tanda.' : '';
+    const rank = s => { const p = S.probe[s.id]; return blocked(s) ? 4 : !p ? 2 : p.ok ? (p.cors ? 0 : 1) : 3; };
     const rest = stations().filter(s => !ids.has(s.id) && (!q || norm(s.name).includes(q)));
+    if (S.mode === 'live') rest.sort((a, b) => rank(a) - rank(b));
     $('#catTitle').textContent = S.mode === 'demo' ? 'Catálogo de demostración' : 'Uruguay, ' + (S.catalog.length + S.custom.length) + ' emisoras';
     $('#catList').innerHTML = rest.slice(0, 120).map(s => row(s, false)).join('') ||
       '<div class="empty">' + (q ? 'Ninguna emisora coincide con la búsqueda.' : 'No quedan emisoras por sumar.') + '</div>';
     $('#catNote').textContent = S.mode === 'demo' ? 'En la demo el audio es sintético y los perfiles son aproximados. Los nombres sirven para probar el match.'
-      : (rest.length > 120 ? 'Se muestran 120. Usá el buscador para ver el resto. ' : '') + (IN_CLAUDE ? 'Dentro de Claude las radios reales no suenan: abrí RADIA en tu navegador. ' : 'Tocá el triángulo para probar una radio antes de sumarla. ') + 'Streams del directorio abierto radio-browser.info.';
+      : (rest.length > 120 ? 'Se muestran 120. Usá el buscador para ver el resto. ' : '') + (IN_CLAUDE ? 'Dentro de Claude las radios reales no suenan: abrí RADIA en tu navegador. '
+          : (() => { const all = stations(), ok = all.filter(s => S.probe[s.id] && S.probe[s.id].cors).length, seen = all.filter(s => S.probe[s.id]).length;
+              return (scanning ? 'Revisando radios, ' + seen + ' de ' + all.length + '. ' : seen ? ok + ' de ' + seen + ' radios revisadas dejan anticipar sus tandas' + (PX() ? ' con el puente. ' : '; el resto necesita el puente (Ajustes). ') : '') + 'Primero van las que permiten cambio automático. '; })()) + 'Streams del directorio abierto radio-browser.info.';
   }
   function renderSettings() {
     for (const b of document.querySelectorAll('#segMode button')) b.setAttribute('aria-pressed', b.dataset.mode === S.mode);
     $('#modeNote').textContent = S.mode === 'demo' ? 'Audio sintético con tandas programadas, para ver cómo trabaja el motor en cualquier lado.' : (IN_CLAUDE ? 'Dentro de Claude los streams externos están bloqueados: abrí RADIA en tu navegador para escuchar radios reales.' : 'Radios reales de Uruguay. Las que dejan analizar su audio se anticipan; el resto cambia por horario aprendido y por tus avisos.');
-    $('#delay').value = S.delay; $('#delayVal').textContent = S.delay + ' s'; $('#proxy').value = S.proxy;
+    $('#delay').value = S.delay; $('#delayVal').textContent = S.delay + ' s'; $('#proxy').value = S.proxy; $('#proxy').placeholder = BRIDGE || 'https://tu-puente.workers.dev';
   }
   function renderAll() { paint(); renderStations(); renderSettings(); }
 
@@ -486,6 +556,7 @@
     for (const v of document.querySelectorAll('.view')) v.classList.toggle('is-on', v.id === 'v-' + name);
     for (const a of document.querySelectorAll('.tabs a')) { if (a.dataset.tab === name) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); }
     if (name === 'emisoras' && S.mode === 'live' && catalogState === 'idle') loadCatalog();
+    if (name === 'emisoras') scan();
     renderAll(); window.scrollTo(0, 0);
   }
   function setMode(m) {
@@ -497,7 +568,7 @@
   $('#btnPlay').onclick = () => { stopPreview(); P.playing ? stop() : play(); };
   $('#btnAd').onclick = () => {
     const cur = curChan(); if (!cur) return;
-    cur.brain.markAd(P.ctx.currentTime - cur.delay);
+    cur.brain.markAd(P.ctx.currentTime - cur.delay); DG.marks.push([Math.round(P.ctx.currentTime), P.chans.indexOf(cur)]);
     if (S.mode === 'live') sched(cur.id).observe(new Date().getMinutes(), true, 30);
     toast('Anotado. RADIA lo usa para aprender los horarios de ' + cur.st.name + '.');
   };
@@ -529,7 +600,12 @@
   $('#segMode').onclick = e => { const b = e.target.closest('[data-mode]'); if (b) setMode(b.dataset.mode); };
   $('#delay').oninput = e => { S.delay = +e.target.value; $('#delayVal').textContent = S.delay + ' s'; };
   $('#delay').onchange = () => { save(); restart(); paint(); };
-  $('#proxy').onchange = e => { S.proxy = e.target.value.trim(); save(); restart(); renderAll(); };
+  $('#proxy').onchange = e => { S.proxy = e.target.value.trim(); save(); restart(); renderAll(); scan(true); };
+  $('#diag').onclick = async () => {
+    const text = diagText();
+    try { await navigator.clipboard.writeText(text); toast('Diagnóstico copiado. Pegalo en el chat con Claude.'); }
+    catch (e) { $('#shTitle').textContent = 'Diagnóstico'; $('#shRows').innerHTML = '<textarea readonly style="width:100%;height:40vh;border:0;background:none;color:inherit;font:12px ui-monospace,monospace;padding:12px">' + esc(text) + '</textarea>'; $('#sheet').showModal(); const ta = $('#shRows textarea'); ta.focus(); ta.select(); }
+  };
   $('#cAdd').onclick = () => {
     const name = $('#cName').value.trim(), url = $('#cUrl').value.trim();
     if (!name || !/^https?:\/\/.+/.test(url)) return toast('Completá el nombre y una dirección que empiece con http.');
