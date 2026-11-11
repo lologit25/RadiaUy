@@ -227,7 +227,7 @@
     el.src = via(list[k]);
     ch.el = el; ch.live = false;
     if (cors) { graph(ch); ch.src = P.ctx.createMediaElementSource(el); ch.src.connect(ch.input); }
-    else { el.volume = ch.target || 0; }
+    else { el.muted = !(ch.target > 0); try { el.volume = ch.target > 0 ? 1 : 0; } catch (e) { /* iPhone */ } }
     el.addEventListener('playing', () => { ch.live = true; ch.ok = true; note(ch.id, { ok: true, cors: !!cors }); });
     const fail = () => {
       if (ch.el !== el) return; clearTimeout(ch.wd);
@@ -260,18 +260,22 @@
         g.setValueCurveAtTime(curve, t + .01, Math.max(.05, dur));
       } catch (e) { g.cancelScheduledValues(0); g.setValueAtTime(to, P.ctx.currentTime + offset + dur); }
     } else if (ch.el) {
-      clearInterval(ch.fade); const el = ch.el, start = performance.now() + offset * 1000, from = el.volume;
-      ch.fade = setInterval(() => {
-        const x = E.clamp((performance.now() - start) / (dur * 1000));
-        try { el.volume = E.clamp(from + (to - from) * x); } catch (e) { /* iOS no deja mover el volumen */ }
-        el.muted = to === 0 && x >= 1; if (x >= 1) clearInterval(ch.fade);
-      }, 40);
+      clearInterval(ch.fade); const el = ch.el, start = performance.now() + offset * 1000, from = el.muted ? 0 : el.volume;
+      const tick = () => {
+        const x = E.clamp((performance.now() - start) / (dur * 1000)), v = from + (to - from) * x;
+        try { el.volume = E.clamp(v); } catch (e) { /* iPhone no deja mover el volumen */ }
+        // En iPhone el volumen no cambia: se silencia en la mitad del fundido (corte limpio) y solo se activa cuando le toca sonar
+        el.muted = to > from ? x < .5 && offset > 0 && performance.now() < start : v < .5;
+        if (x >= 1) { el.muted = to === 0; clearInterval(ch.fade); }
+      };
+      tick(); ch.fade = setInterval(tick, 40);
     }
   }
   function note(id, r) { const o = S.probe[id] || {}; S.probe[id] = Object.assign(o, r, { at: Date.now() }); if (!r.ok) delete S.probe[id].cors; save(); }
   function log(text) { const d = new Date(); P.log.unshift({ time: String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'), text }); P.log.length = Math.min(P.log.length, 5); }
 
   async function play() {
+    if (P.playing || P.starting) return;
     const list = favs();
     if (!list.length) { go('emisoras'); toast('Elegí al menos una emisora.'); return; }
     const AC = window.AudioContext || window.webkitAudioContext;
@@ -281,7 +285,10 @@
       const len = P.ctx.sampleRate * 2; P.noise = P.ctx.createBuffer(1, len, P.ctx.sampleRate);
       const d = P.noise.getChannelData(0); for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
     }
+    P.starting = true;
     try { await P.ctx.resume(); } catch (e) { /* seguirá suspendido hasta un toque */ }
+    P.starting = false;
+    if (P.playing) return;
     P.master = P.ctx.createGain(); P.master.connect(P.comp);
     const main = mainId(); P.mainIndex = list.findIndex(s => s.id === main);
     P.chans = list.map((st, i) => makeChan(st, i, st.id === main));
