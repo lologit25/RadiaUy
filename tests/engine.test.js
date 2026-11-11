@@ -181,3 +181,59 @@ test('v2: música con variación periódica moderada no genera cortes', () => {
   feed(b, 0, 300, t => flat(base.map((v, k) => v + 3.5 * Math.sin(2 * Math.PI * t / 8.6 + k)), t));
   assert.strictEqual(b.iv.length, 0, JSON.stringify(b.cuts));
 });
+
+// ---------- volver a la favorita ----------
+test('v2: la tanda se cierra cuando vuelve el sonido del programa, aunque el programa tenga cortes frecuentes', () => {
+  const b = new E.Brain();
+  feedSegs(b, [[0, 120, 1], [120, 140, 2], [140, 165, 3], [165, 185, 4], [185, 200, 5],
+    [200, 225, 1], [225, 240, 8], [240, 262, 1], [262, 280, 9], [280, 305, 1], [305, 320, 10], [320, 420, 1]]);
+  const iv = b.iv.filter(i => i.src === 'cuts');
+  assert.strictEqual(iv.length, 1, JSON.stringify(b.iv));
+  assert.ok(iv[0].e != null && Math.abs(iv[0].e - 200) <= 4, 'fin ' + iv[0].e);
+  assert.ok(iv[0].closedAt - 200 <= 30, 'se supo que terminó a los ' + (iv[0].closedAt - 200) + ' s');
+});
+test('v2: una tanda nunca dura más que el tope, y después hay un respiro sin tandas nuevas', () => {
+  const b = new E.Brain({ maxBreak: 200 }), segs = [[0, 120, 1]];
+  for (let t = 120, k = 30; t < 700; t += 20, k++) segs.push([t, t + 20, k]);
+  feedSegs(b, segs);
+  const first = b.iv[0];
+  assert.ok(first.e != null && first.e - first.s <= 215, 'duró ' + (first.e - first.s));
+  for (let t = first.e + 5; t < first.e + 85; t += 5) assert.ok(!b.isAdAt(t), 'respiro en ' + t);
+});
+
+// ---------- radio de reserva cuando todas las favoritas están en tanda ----------
+function quad() {
+  const main = st('main', 'periodistico', 12), a = st('a', 'deportes', 12), b = st('b', 'urbano', 12);
+  const r = Object.assign(st('r', 'magazine', 12), { tier: 1 });
+  return { main, a, b, r, d: new E.Director({ stations: [main, a, b, r], mainId: 'main' }) };
+}
+const runD = (d, from, to) => { const acts = []; for (let t = from; t < to; t += 0.1) { const x = d.tick(t); if (x) acts.push(Object.assign({ t: +t.toFixed(1) }, x)); } return acts; };
+test('reserva: no se usa mientras haya una favorita limpia', () => {
+  const { main, d } = quad(); main.brain.iv.push({ s: 100, e: 160 });
+  const acts = runD(d, 105, 200);
+  assert.deepStrictEqual(acts.map(x => x.to), ['a', 'main']);
+});
+test('reserva: si las tres favoritas están en tanda, pasa a la reserva en vez de bajar el volumen', () => {
+  const { main, a, b, d } = quad();
+  [main, a, b].forEach(s => s.brain.iv.push({ s: 100, e: 200 }));
+  const acts = runD(d, 105, 125);
+  assert.strictEqual(acts.length, 1, JSON.stringify(acts));
+  assert.strictEqual(acts[0].type, 'switch'); assert.strictEqual(acts[0].to, 'r'); assert.strictEqual(acts[0].reason, 'ad');
+});
+test('reserva: se abandona apenas una favorita queda limpia, y la principal tiene prioridad', () => {
+  const { main, a, b, d } = quad();
+  main.brain.iv.push({ s: 100, e: 220 }); a.brain.iv.push({ s: 100, e: 160 }); b.brain.iv.push({ s: 100, e: 300 });
+  const acts = runD(d, 105, 280);
+  assert.deepStrictEqual(acts.map(x => x.to), ['r', 'a', 'main'], JSON.stringify(acts));
+  assert.ok(acts[1].t >= 172 && acts[1].t <= 185, 'a la favorita alternativa en ' + acts[1].t);
+  assert.ok(acts[2].t >= 232 && acts[2].t <= 245, 'a la principal en ' + acts[2].t);
+});
+test('reserva: si la reserva también está en tanda, baja el volumen como último recurso', () => {
+  const { main, a, b, r, d } = quad();
+  [main, a, b, r].forEach(s => s.brain.iv.push({ s: 100, e: 200 }));
+  assert.strictEqual(runD(d, 105, 125)[0].type, 'duck');
+});
+test('director: una emisora que perdió la señal no es destino', () => {
+  const { main, a, d } = trio(); a.live = false; main.brain.iv.push({ s: 100, e: null });
+  assert.strictEqual(runD(d, 105, 113)[0].to, 'b');
+});
