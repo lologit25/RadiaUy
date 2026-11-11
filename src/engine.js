@@ -87,7 +87,9 @@
   // ---------- detector por emisora ----------
   class Brain {
     constructor(o = {}) {
-      this.o = Object.assign({ gapDb: -50, win: 3, enter: .6, enterHold: 1.5, exitHold: 5, maxBreak: 480, breakLen: 150 }, o);
+      this.o = Object.assign({ gapDb: -50, win: 3, enter: .6, enterHold: 1.5, exitHold: 5, maxBreak: 480, breakLen: 150,
+        seg: 5, novMin: 3.5, warm: 20, minSeg: 6, maxSeg: 45, closeAfter: 50 }, o);
+      this.blocks = []; this.cuts = []; this.cutInfo = []; this.acc = null; this.open2 = null;
       this.frames = []; this.iv = []; this.bounds = [];
       this.base = null; this.baseC = null; this.talk = null; this.p = 0;
       this.open = null; this.gapStart = null; this.riseT = null; this.hiSince = null; this.calmSince = null;
@@ -98,6 +100,7 @@
       const o = this.o, t = f.t, dt = this.lastT == null ? .05 : clamp(t - this.lastT, 0, 1);
       this.lastT = t; this.analysisT = t;
       f.amp = Math.pow(10, f.db / 20);
+      if (f.bands) this._v2(f);
       const fr = this.frames; fr.push(f);
       while (fr.length && fr[0].t < t - 40) fr.shift();
       // silencios cortos = costuras entre avisos
@@ -146,6 +149,47 @@
           if (t - this.calmSince >= o.exitHold) this._close(this.calmSince - 1);
         } else this.calmSince = null;
         if (this.open && t - this.open.s > o.maxBreak) { this._close(t); this.base = loud; this.baseC = cent; this.p = 0; }
+      }
+    }
+    // --- v2: la tanda como sucesión de segmentos cortos de timbre distinto (no depende del volumen) ---
+    _v2(f) {
+      let a = this.acc;
+      if (a && f.t - a.t0 >= 1) { this._block(a); a = null; }
+      if (!a) a = this.acc = { t0: f.t, n: 0, sum: new Array(f.bands.length).fill(0), amp: [] };
+      a.n++; for (let k = 0; k < a.sum.length; k++) a.sum[k] += f.bands[k]; a.amp.push(f.amp);
+    }
+    _block(a) {
+      if (a.n < 3) return;                                                   // pestaña en segundo plano: muy pocos datos
+      const o = this.o, L = o.seg, B = this.blocks, avg = x => x.reduce((p, c) => p + c, 0) / x.length;
+      const m = a.sum.map(x => x / a.n), mean = avg(m), am = avg(a.amp);
+      B.push({ t: a.t0, shape: m.map(x => x - mean), talk: a.amp.filter(x => x < .5 * am).length / a.n, nov: 0 });
+      if (B.length > 240) B.shift();
+      if (B.length < 2 * L + 4) return;
+      const c = B.length - L, K = B[c].shape.length; let d = 0, ta = 0, tb = 0;
+      for (let k = 0; k < K; k++) { let x = 0, y = 0; for (let i = 0; i < L; i++) { x += B[c - 1 - i].shape[k]; y += B[c + i].shape[k]; } d += Math.pow((x - y) / L, 2); }
+      for (let i = 0; i < L; i++) { ta += B[c - 1 - i].talk; tb += B[c + i].talk; }
+      B[c].nov = Math.sqrt(d / K) + 4 * Math.abs(ta - tb) / L;               // cuánto cambió el sonido en este punto
+      const p = c - 2, v = B[p].nov; let peak = v > 0;
+      for (let i = p - 2; i <= p + 2; i++) if (i !== p && (i < p ? B[i].nov > v : B[i].nov >= v)) peak = false;
+      // umbral que se adapta a cuánto varía normalmente esta radio (mediana + desvío robusto)
+      const hist = B.slice(Math.max(0, p - 120), p).map(x => x.nov).filter(x => x > 0).sort((x, y) => x - y), med = hist.length ? hist[hist.length >> 1] : 0;
+      const dev = hist.map(x => Math.abs(x - med)).sort((x, y) => x - y), mad = dev.length ? dev[dev.length >> 1] : 0;
+      const thr = Math.max(o.novMin, med + 3 * mad, 1.8 * med);
+      const last = this.cuts[this.cuts.length - 1];
+      if (peak && hist.length >= o.warm && v > thr && (last == null || B[p].t - last >= 5)) {
+        const t = B[p].t, mean = (from) => { const r = new Array(K).fill(0); for (let i = 0; i < L; i++) for (let k = 0; k < K; k++) r[k] += B[from + i].shape[k] / L; return r; };
+        const info = { t, before: mean(p - L), after: mean(p) }, prev = this.cutInfo[this.cutInfo.length - 1];
+        this.cuts.push(t); this.cutInfo.push(info); if (this.cuts.length > 60) { this.cuts.shift(); this.cutInfo.shift(); }
+        // si lo que suena ahora se parece a lo de antes del corte anterior, fue un inserto dentro del mismo programa
+        const back = prev ? Math.sqrt(prev.before.reduce((q, x, k) => q + Math.pow(x - info.after[k], 2), 0) / K) : 0;
+        if (!this.open2 && last != null && t - last >= o.minSeg && t - last <= o.maxSeg && back > Math.max(2, .5 * v)) {      // un segmento corto y lo que sigue es otra cosa: tanda
+          this.open2 = { s: last, e: null, src: 'cuts', known: a.t0 + 1 }; this.iv.push(this.open2); this.detectedAt = a.t0 + 1;
+        }
+      }
+      if (this.open2) {
+        const end = this.cuts[this.cuts.length - 1];
+        if (B[p].t - end > o.closeAfter) { this.open2.e = end; this.open2 = null; }             // un tramo largo y estable: volvió el programa
+        else if (B[p].t - this.open2.s > o.maxBreak) { this.open2.e = B[p].t; this.open2 = null; }
       }
     }
     _close(e) {
