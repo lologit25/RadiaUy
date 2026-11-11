@@ -46,7 +46,7 @@
   const BRIDGE = '';                       // dirección del puente incluida en esta publicación (vacío = sin puente)
   const IN_CLAUDE = /claude|anthropic/i.test(location.hostname) || /claude/i.test(document.referrer);
   const DEF = () => ({ mode: IN_CLAUDE ? 'demo' : 'live', favs: { demo: ['d-oceano', 'd-delsol', 'd-azul'], live: [] }, main: { demo: 'd-oceano', live: null },
-    delay: 45, v: 3, proxy: '', profiles: {}, custom: [], sched: {}, probe: {}, stats: { avoided: 0, heard: 0, switches: 0 }, catalog: [], catalogAt: 0 });
+    delay: 45, v: 3, proxy: '', profiles: {}, custom: [], sched: {}, probe: {}, stats: { avoided: 0, heard: 0, switches: 0 }, catalog: [], catalogAt: 0, tap: null });
   let S = DEF();
   try { const j = JSON.parse(localStorage.getItem(KEY) || 'null'); if (j && j.favs && j.main) { S = Object.assign(S, j); S.probe = S.probe || {}; if (j.v !== 3) { S.delay = 45; S.v = 3; S.probe = {}; } } } catch (e) { /* sin almacenamiento: se sigue en memoria */ }
   const save = () => { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { /* idem */ } };
@@ -210,10 +210,23 @@
   }
 
   // ---------- reproductor ----------
-  const P = { ctx: null, chans: [], dir: null, playing: false, log: [], truth: 0, note: null };
+  // Regla de la casa: suena una sola emisora por vez. P.on es la que tiene la salida (ninguna mientras pasa el audio logo)
+  // y P.next la que está por entrar. Todo lo demás queda en cero o directamente cerrado.
+  const P = { ctx: null, chans: [], dir: null, playing: false, log: [], truth: 0, note: null, on: null, next: null, seq: 0, tap: null, outId: null };
   window.__radia = { P, S, E };
   const chan = id => P.chans.find(c => c.id === id);
   const curChan = () => P.dir && chan(P.dir.current);
+  const wanted = ch => !!ch && (ch.id === P.on || ch.id === P.next);
+  const C = E.CHANGE, IDENT_MIN = 1.15;
+
+  // Para anticipar la tanda hay que abrir el stream de una emisora aunque no se escuche, y callarlo con una ganancia de Web Audio.
+  // Safari (y todo navegador de iPhone y iPad) no le entrega a Web Audio el audio de un stream en vivo: suena por fuera y ninguna
+  // ganancia lo calla. Por eso una emisora solo se abre en segundo plano donde se comprobó que el análisis recibe su audio.
+  // Con ?directo en la dirección se fuerza ese modo de una sola conexión en cualquier navegador, para probarlo.
+  const UA = navigator.userAgent;
+  const APPLE = /iP(hone|ad|od)/.test(UA) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1) || /^((?!chrom|android|crios|fxios|edg).)*safari/i.test(UA);
+  const NO_TAP = APPLE || /[?&]directo\b/.test(location.search);
+  const tapKnown = () => NO_TAP ? false : S.tap && S.tap.ok && S.tap.ua === UA ? true : null;
 
   function graph(ch) {
     const c = P.ctx; ch.input = c.createGain(); ch.an = c.createAnalyser(); ch.an.fftSize = 1024; ch.an.smoothingTimeConstant = .3;
@@ -221,80 +234,264 @@
     ch.gL = c.createGain(); ch.gD = c.createGain(); ch.gL.gain.value = ch.gD.gain.value = 0;
     ch.input.connect(ch.an); ch.input.connect(ch.gL); ch.gL.connect(P.master);        // directo: suena ya, sin anticipación
     ch.input.connect(ch.dl); ch.dl.connect(ch.gD); ch.gD.connect(P.master);           // demorado: da margen para ver venir la tanda
-    ch.g = ch.gL; ch.delay = 0; ch.liveAt = null;
+    ch.g = ch.gL; ch.delay = 0; ch.liveAt = null; ch.level = 0; ch.fadeEnd = 0; ch.zeroed = true;
   }
   /** Al entrar a una emisora: usa la salida demorada si ya juntó margen; si no, la directa. */
   function tap(ch) {
     if (!ch.an) return;
     const use = ch.delay ? ch.gD : ch.gL, other = ch.delay ? ch.gL : ch.gD, t = P.ctx.currentTime;
-    try { other.gain.cancelScheduledValues(t); other.gain.setValueAtTime(0, t); } catch (e) { /* nada */ }
+    try { other.gain.cancelScheduledValues(0); other.gain.setValueAtTime(0, t); } catch (e) { /* nada */ }
     ch.g = use;
   }
   function ungraph(ch) { ch.g = null; for (const k of ['src', 'input', 'an', 'dl', 'gL', 'gD']) if (ch[k]) { try { ch[k].disconnect(); } catch (e) { /* ya suelto */ } ch[k] = null; } ch.delay = 0; }
+  /** Corte duro de las dos salidas de una emisora analizada. */
+  function zero(ch) {
+    if (!ch.an) return; const t = P.ctx.currentTime;
+    for (const g of [ch.gL, ch.gD]) { try { g.gain.cancelScheduledValues(0); g.gain.setValueAtTime(0, t); } catch (e) { /* nada */ } }
+    ch.level = 0; ch.zeroed = true;
+  }
   const usable = st => st.urls.filter(u => PX() || location.protocol !== 'https:' || /^https:/.test(u));
   const via = u => PX() ? PX().replace(/\/+$/, '') + '/s?u=' + encodeURIComponent(u) : u;
-  function openStream(ch, cors, k = 0) {
+
+  // ---------- emisoras analizadas: cada una con su stream dentro del grafo ----------
+  function closeStream(ch) {
+    clearTimeout(ch.wd);
+    if (ch.el) { const el = ch.el; ch.el = null; try { el.pause(); el.removeAttribute('src'); el.load(); } catch (e) { /* nada */ } }
+    ungraph(ch); ch.heard = false; if (P.outId !== ch.id) ch.live = false;
+  }
+  /** Abre el stream dentro del grafo para poder analizarlo. Si ninguna de sus direcciones lo permite, la emisora queda como directa. */
+  function openStream(ch, k = 0) {
     const list = usable(ch.st);
-    if (k >= list.length) { if (cors) return openStream(ch, false, 0); ch.ok = false; ch.live = false; note(ch.id, { ok: false }); return; }
-    const el = new Audio(); el.preload = 'none'; if (cors) el.crossOrigin = 'anonymous';
-    el.src = via(list[k]);
-    ch.el = el; ch.live = false;
-    if (cors) { graph(ch); ch.src = P.ctx.createMediaElementSource(el); ch.src.connect(ch.input); }
-    else { el.muted = !(ch.target > 0); try { el.volume = ch.target > 0 ? 1 : 0; } catch (e) { /* iPhone */ } }
-    el.addEventListener('playing', () => { if (!ch.live && ch.an) ch.liveAt = P.ctx.currentTime; ch.live = true; ch.ok = true; note(ch.id, { ok: true, cors: !!cors }); });
-    const fail = () => {
-      if (ch.el !== el) return; clearTimeout(ch.wd);
-      if (cors) ungraph(ch); el.removeAttribute('src'); try { el.load(); } catch (e) { /* nada */ }
-      openStream(ch, cors, k + 1);       // siguiente stream; al final, sin análisis (se escucha igual, sin anticipación)
-    };
+    if (k >= list.length) { ch.direct = true; if (!ch.wasLive) ch.nocors = true; if (wanted(ch)) openDirect(ch); else check(ch); return; }
+    const el = new Audio(); el.preload = 'none'; el.crossOrigin = 'anonymous'; el.src = via(list[k]);
+    el.muted = P.tap !== true && P.on !== ch.id;                   // sin análisis comprobado, espera callada a que termine el audio logo
+    ch.el = el; ch.live = false; ch.heard = false;
+    graph(ch); ch.src = P.ctx.createMediaElementSource(el); ch.src.connect(ch.input);
+    if (P.on === ch.id) fade(ch, P.dir && P.dir.ducked ? .18 : 1, C.in);                // se reabrió la que está al aire
+    el.addEventListener('playing', () => { if (ch.el !== el) return; if (!ch.live) ch.liveAt = P.ctx.currentTime; ch.live = ch.ok = ch.wasLive = true; note(ch.id, { ok: true, cors: true }); });
+    const fail = () => { if (ch.el !== el) return; closeStream(ch); openStream(ch, k + 1); };   // siguiente dirección
     el.addEventListener('error', fail);
     clearTimeout(ch.wd); ch.wd = setTimeout(() => { if (ch.el === el && !ch.live) fail(); }, 15000);
     el.play().catch(() => { /* se reintenta al tocar reproducir */ });
   }
-  function makeChan(st, i, isMain) {
-    const demo = !!st.demo;
-    const ch = { id: st.id, st, demo, ok: true, delay: 0, target: 0, category: catOf(st), brain: new E.Brain(demo ? { maxBreak: 60, breakLen: 20 } : {}) };
-    if (blocked(st)) { ch.ok = false; return ch; }
-    if (demo) {
-      graph(ch); ch.live = true; ch.liveAt = P.ctx.currentTime;
-      const order = isMain ? 0 : i + (i < P.mainIndex ? 1 : 0);
-      ch.synth = new Synth(P.ctx, ch.input, P.noise, { category: ch.category, seed: hue(st) + 3, period: [80, 95, 110][order], adLen: [22, 24, 20][order], firstAd: [22, 75, 125][order] });
-    } else openStream(ch, true);
-    return ch;
+  /** El análisis ya se comprobó en este navegador: recién ahora las demás emisoras se abren en segundo plano. */
+  function openBackground() { for (const ch of P.chans) if (!ch.demo && !ch.direct && !ch.el && ch.ok !== false) openStream(ch); }
+  function proven() {
+    P.heardAny = true; if (P.tap === true) return;
+    P.tap = true; S.tap = { ok: true, ua: UA }; save();
+    for (const ch of P.chans) if (ch.el) ch.el.muted = false;      // con el grafo comprobado, las calla la ganancia y se pueden analizar
+    openBackground();
   }
-  function setGain(ch, to, dur, offset = 0) {
+  /** El stream avanza pero al grafo no le llega nada: ese audio no se puede analizar ni callar con ganancias. Pasa a salida directa. */
+  function deaf(ch) {
+    const all = !P.heardAny;                                       // si a ninguna le llegó audio, este navegador no sirve para ninguna
+    if (all) { P.tap = false; S.tap = null; save(); }
+    for (const c of P.chans) {
+      if (c.demo || c.direct || c.ok === false || !(all || c === ch)) continue;
+      closeStream(c); c.direct = true;
+      if (wanted(c)) openDirect(c); else check(c);
+    }
+  }
+  /** Una emisora que no se abre en segundo plano: ¿su servidor responde? (se pregunta sin reproducirla) */
+  async function check(ch) {
+    for (const u of usable(ch.st)) {
+      const c = new AbortController(), to = setTimeout(() => c.abort(), 8000);
+      try { await fetch(via(u), { mode: 'no-cors', signal: c.signal, cache: 'no-store' }); clearTimeout(to); c.abort(); return; }
+      catch (e) { clearTimeout(to); }
+    }
+    if (chan(ch.id) === ch && !ch.live && !wanted(ch)) { ch.ok = false; note(ch.id, { ok: false }); }
+  }
+
+  // ---------- emisoras sin análisis: un único reproductor directo ----------
+  // Al ser uno solo es imposible que dos de estas emisoras suenen juntas. Se habilita con el toque de Reproducir (iPhone lo exige)
+  // y después cambia de emisora cambiando de dirección.
+  const OUT = new Audio(); OUT.preload = 'none'; let outVol = 1;
+  const SILENCE = (() => {
+    const n = 800, b = new Uint8Array(44 + n), v = new DataView(b.buffer), s = (o, t) => { for (let i = 0; i < t.length; i++) b[o + i] = t.charCodeAt(i); };
+    s(0, 'RIFF'); v.setUint32(4, 36 + n, true); s(8, 'WAVEfmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+    v.setUint32(24, 8000, true); v.setUint32(28, 8000, true); v.setUint16(32, 1, true); v.setUint16(34, 8, true); s(36, 'data'); v.setUint32(40, n, true); b.fill(128, 44);
+    try { return URL.createObjectURL(new Blob([b], { type: 'audio/wav' })); } catch (e) { return ''; }
+  })();
+  const setVol = v => { outVol = v; try { OUT.volume = E.clamp(v); } catch (e) { /* iPhone no deja mover el volumen */ } };
+  function unlock() {
+    if (P.outId || !SILENCE) return;
+    OUT.muted = false; setVol(1); OUT.src = SILENCE; const p = OUT.play(); if (p && p.catch) p.catch(() => { /* nada */ });
+  }
+  function openDirect(ch, k = 0) {
+    const list = usable(ch.st), prev = chan(P.outId);
+    if (k >= list.length) { ch.ok = false; ch.live = false; note(ch.id, { ok: false }); if (prev === ch) closeDirect(); return; }
+    clearTimeout(P.outWd); clearInterval(P.outFade); if (prev && prev !== ch) prev.live = false;
+    P.outId = ch.id; P.outK = k; ch.live = false;
+    OUT.muted = P.on !== ch.id; setVol(P.on === ch.id ? 1 : 0);                           // entra callada si todavía pasa el audio logo
+    OUT.src = via(list[k]);
+    P.outWd = setTimeout(() => { if (P.outId === ch.id && P.outK === k && !ch.live) openDirect(ch, k + 1); }, 15000);
+    const p = OUT.play(); if (p && p.catch) p.catch(() => { /* se reintenta al tocar reproducir */ });
+  }
+  function closeDirect() {
+    clearTimeout(P.outWd); clearInterval(P.outFade);
+    const ch = chan(P.outId); if (ch) ch.live = false; P.outId = null;
+    try { OUT.pause(); OUT.removeAttribute('src'); OUT.load(); } catch (e) { /* nada */ }
+    OUT.muted = true;
+  }
+  OUT.addEventListener('playing', () => { const ch = chan(P.outId); if (!ch) return; ch.live = ch.ok = true; note(ch.id, ch.nocors ? { ok: true, cors: false } : { ok: true }); });
+  OUT.addEventListener('error', () => { const ch = chan(P.outId); if (ch) openDirect(ch, P.outK + 1); });
+  /** Fundido del reproductor directo. En iPhone el volumen no se mueve: ahí entra y sale silenciándose, con un corte limpio. */
+  function fadeDirect(to, dur) {
+    clearInterval(P.outFade); const from = OUT.muted ? 0 : outVol, start = performance.now();
+    if (to > 0) OUT.muted = false;
+    const tick = () => {
+      const x = E.clamp((performance.now() - start) / (dur * 1000)); setVol(from + (to - from) * x);
+      if (x >= 1) { clearInterval(P.outFade); OUT.muted = to === 0 || (to < .5 && Math.abs(OUT.volume - to) > .05); }
+    };
+    tick(); P.outFade = setInterval(tick, 30);
+  }
+
+  /** Sube o baja una emisora por su propia salida: la ganancia del grafo si se analiza; el reproductor directo si no. */
+  function fade(ch, to, dur) {
     if (!ch) return; ch.target = to;
     if (ch.g) {
-      const g = ch.g.gain, t = P.ctx.currentTime + offset, from = offset ? (to > .5 ? 0 : g.value) : g.value;
+      const g = ch.g.gain, t = P.ctx.currentTime, from = t < ch.fadeEnd ? g.value : ch.level;
+      ch.level = to; ch.fadeEnd = t + dur + .05; ch.zeroed = false;
       try {
         g.cancelScheduledValues(t); g.setValueAtTime(from, t);
         const n = 24, curve = new Float32Array(n);
         for (let i = 0; i < n; i++) { const x = i / (n - 1); curve[i] = from + (to - from) * (to > from ? Math.sin(x * Math.PI / 2) : 1 - Math.cos(x * Math.PI / 2)); }
         g.setValueCurveAtTime(curve, t + .01, Math.max(.05, dur));
-      } catch (e) { g.cancelScheduledValues(0); g.setValueAtTime(to, P.ctx.currentTime + offset + dur); }
-    } else if (ch.el) {
-      clearInterval(ch.fade); const el = ch.el, start = performance.now() + offset * 1000, from = el.muted ? 0 : el.volume;
-      const tick = () => {
-        const x = E.clamp((performance.now() - start) / (dur * 1000)), v = from + (to - from) * x;
-        try { el.volume = E.clamp(v); } catch (e) { /* iPhone no deja mover el volumen */ }
-        // En iPhone el volumen no cambia: se silencia en la mitad del fundido (corte limpio) y solo se activa cuando le toca sonar
-        el.muted = to > from ? x < .5 && offset > 0 && performance.now() < start : v < .5;
-        if (x >= 1) { el.muted = to === 0; clearInterval(ch.fade); }
-      };
-      tick(); ch.fade = setInterval(tick, 40);
-    }
+      } catch (e) { try { g.cancelScheduledValues(0); g.setValueAtTime(to, t + dur); } catch (e2) { g.value = to; } }
+    } else if (P.outId === ch.id) fadeDirect(to, dur);
+  }
+  /** Garantía dura, diez veces por segundo: lo que no es la emisora al aire queda en cero, y el reproductor directo
+      solo existe para la que suena o está por entrar. */
+  function enforce() {
+    const t = P.ctx.currentTime;
+    for (const ch of P.chans) if (ch.an && ch.id !== P.on && !ch.zeroed && t >= ch.fadeEnd) zero(ch);
+    if (P.outId && P.outId !== P.on && P.outId !== P.next && performance.now() >= (P.outHold || 0)) closeDirect();
   }
   function note(id, r) { const o = S.probe[id] || {}; S.probe[id] = Object.assign(o, r, { at: Date.now() }); if (!r.ok) delete S.probe[id].cors; save(); }
   function log(text) { const d = new Date(); P.log.unshift({ time: String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'), text }); P.log.length = Math.min(P.log.length, 5); }
 
+  // ---------- audio logo: sintonizador, dos notas y la locutora ("Radia sintoniza …") ----------
+  const V = { voice: null, count: 0, u: null, t: null, nodes: [] };
+  Object.assign(window.__radia, { V, OUT });
+  const FEM = /sabina|helena|laura|elvira|dalia|paulina|m[oó]nica|marisol|valentina|elena|camila|paloma|luciana|catalina|sof[ií]a|isabel|ang[eé]lica|soledad|francisca|ximena|salom[eé]|andrea|karla|lorena|marta|teresa|tania|paola|luc[ií]a|flo\b|sandy|shelley|google espa[nñ]ol|female|femenin|mujer/i;
+  const MAS = /pablo|ra[uú]l|jorge|diego|juan|carlos|mateo|tom[aá]s|[aá]lvaro|alonso|enrique|miguel|andr[eé]s|lorenzo|gonzalo|marcelo|emilio|luis|rodrigo|federico|roberto|mario|alex|v[ií]ctor|sebasti[aá]n|javier|manuel|eddy|reed|rocko|grandpa|\bmale|masculin|hombre/i;
+  /** Elige la voz en español: primero mujer, después la más cercana al Río de la Plata y la de mejor calidad. */
+  function pickVoice() {
+    let vs = []; try { vs = speechSynthesis.getVoices() || []; } catch (e) { /* sin voces */ }
+    let best = null, top = -1e9;
+    for (const v of vs) {
+      const lang = String(v.lang).replace('_', '-').toLowerCase(); if (!/^es(-|$)/.test(lang)) continue;
+      let sc = lang === 'es-uy' ? 6 : lang === 'es-ar' ? 5 : lang === 'es-es' || lang === 'es' ? 3 : 4;
+      if (FEM.test(v.name)) sc += 10; if (MAS.test(v.name)) sc -= 20;
+      if (/natural|neural|premium|enhanced|mejorad|siri/i.test(v.name)) sc += 3;
+      if (v.localService) sc += 1;
+      if (sc > top) { top = sc; best = v; }
+    }
+    V.count = vs.length; V.voice = best;
+  }
+  if (window.speechSynthesis) { pickVoice(); try { speechSynthesis.addEventListener('voiceschanged', pickVoice); } catch (e) { speechSynthesis.onvoiceschanged = pickVoice; } }
+  /** iPhone solo deja hablar si la primera frase sale de un toque: se manda una muda al tocar Reproducir. */
+  function primeVoice() {
+    if (V.primed || !window.speechSynthesis || !window.SpeechSynthesisUtterance) return; V.primed = true;
+    try { const u = new SpeechSynthesisUtterance(' '); u.volume = 0; u.lang = 'es-US'; speechSynthesis.speak(u); } catch (e) { /* sin voz */ }
+  }
+  /** La locutora. Avisa una sola vez: cuando terminó, cuando falló o si no arrancó a tiempo. */
+  function say(text, done) {
+    const ss = window.speechSynthesis; let fired = false, wd;
+    const fin = () => { if (fired) return; fired = true; clearTimeout(wd); done(); };
+    const giveUp = () => { try { ss.cancel(); } catch (e) { /* nada */ } fin(); };
+    if (!ss || !window.SpeechSynthesisUtterance || (V.count && !V.voice)) return fin();      // sin voz en español: queda solo el sintonizador
+    try {
+      if (ss.speaking || ss.pending) ss.cancel();
+      const u = new SpeechSynthesisUtterance(text); V.u = u;       // se guarda: si el navegador recicla el objeto, nunca avisa que terminó
+      if (V.voice) { u.voice = V.voice; u.lang = V.voice.lang; } else u.lang = 'es-US';
+      u.rate = 1.22; u.pitch = 1.05; u.volume = 1;
+      u.onstart = () => { clearTimeout(wd); wd = setTimeout(giveUp, 4500); };
+      u.onend = u.onerror = fin;
+      // Muchas voces avisan el final recién después de un silencio largo. Si la voz marca las palabras, alcanza con dejar
+      // terminar la última: se estima cuánto dura por el ritmo que traía (las siglas y los números se deletrean: pesan más).
+      const lastAt = text.lastIndexOf(' ') + 1, last = text.slice(lastAt), weight = /^[A-ZÑ0-9.]+$/.test(last) ? last.length * 3 : last.length;
+      let first = null;
+      u.onboundary = e => {
+        if (fired || (e.name && e.name !== 'word')) return; const now = performance.now();
+        if (!first) first = [now, e.charIndex];
+        if (e.charIndex < lastAt) return;
+        const pace = e.charIndex > first[1] ? (now - first[0]) / (e.charIndex - first[1]) : 70;
+        clearTimeout(wd); wd = setTimeout(fin, E.clamp(pace * weight, 320, 1300) + 100);
+      };
+      wd = setTimeout(giveUp, 1600);                               // no arrancó: sigue solo con el sintonizador
+      ss.speak(u);
+    } catch (e) { fin(); }
+  }
+  /** Barrido de sintonizador (estática que recorre el dial y silbidos entre emisoras) que engancha en las dos notas de RADIA. */
+  function tuner(t) {
+    const c = P.ctx, out = P.fx, nodes = [];
+    const n = c.createBufferSource(), bp = c.createBiquadFilter(), ng = c.createGain();
+    n.buffer = P.noise; n.loop = true; bp.type = 'bandpass'; bp.Q.value = 1.6;
+    const f = bp.frequency; f.setValueAtTime(500, t); f.exponentialRampToValueAtTime(3800, t + .16); f.exponentialRampToValueAtTime(800, t + .28); f.exponentialRampToValueAtTime(2600, t + .42);
+    const g = ng.gain; g.setValueAtTime(0, t); g.linearRampToValueAtTime(.9, t + .04); g.setValueAtTime(.9, t + .3); g.linearRampToValueAtTime(.12, t + .46); g.linearRampToValueAtTime(0, t + .8);
+    n.connect(bp); bp.connect(ng); ng.connect(out); n.start(t, Math.random() * 1.2); n.stop(t + .85); nodes.push(n);
+    const tone = (at, f0, f1, d, lv, type, ring) => {
+      const o = c.createOscillator(), og = c.createGain(), a = t + at; o.type = type; o.frequency.setValueAtTime(f0, a);
+      if (f1 !== f0) o.frequency.exponentialRampToValueAtTime(f1, a + d);
+      og.gain.setValueAtTime(0, a); og.gain.linearRampToValueAtTime(lv, a + .012);
+      if (ring) og.gain.exponentialRampToValueAtTime(.0006, a + d); else { og.gain.setValueAtTime(lv, a + d * .7); og.gain.linearRampToValueAtTime(0, a + d); }
+      o.connect(og); og.connect(out); o.start(a); o.stop(a + d + .03); nodes.push(o);
+    };
+    tone(.02, 3000, 480, .16, .09, 'sine'); tone(.2, 420, 2300, .12, .075, 'sine'); tone(.32, 1700, 900, .1, .06, 'sine');   // silbidos del dial
+    for (const [at, hz, d] of [[.42, 987.77, .5], [.55, 1318.51, .75]]) { tone(at, hz, hz, d, .22, 'sine', true); tone(at, hz / 2, hz / 2, d * .7, .07, 'triangle', true); }
+    return nodes;
+  }
+  /** Corta lo que quede del audio logo anterior (un cambio encima de otro, o pausa). */
+  function hush() {
+    clearTimeout(V.t); try { if (window.speechSynthesis && (speechSynthesis.speaking || speechSynthesis.pending)) speechSynthesis.cancel(); } catch (e) { /* nada */ }
+    for (const n of V.nodes) { try { n.stop(); } catch (e) { /* ya terminó */ } } V.nodes = [];
+  }
+  const spoken = st => String(st.name).replace(/\s*\(.*?\)\s*/g, ' ').replace(/\s+[-–—]\s+.*$/, '').replace(/\s+/g, ' ').trim();
+  /** Audio logo entre emisoras, de unos 2 s. Se cumple cuando la locutora terminó de decir a qué emisora llegamos. */
+  function ident(st, seq) {
+    return new Promise(res => {
+      const t0 = performance.now(); hush();
+      V.nodes = tuner(P.ctx.currentTime + .04);
+      V.t = setTimeout(() => {
+        if (seq !== P.seq || !P.playing) return res();
+        say('Radia sintoniza ' + spoken(st), () => setTimeout(res, Math.max(60, IDENT_MIN * 1000 - (performance.now() - t0))));
+      }, 150);
+    });
+  }
+  /** Deja lista, todavía en silencio, la emisora que está por entrar. */
+  function ready(ch) {
+    if (ch.an || ch.ok === false) { if (P.outId && P.outId !== ch.id) closeDirect(); return; }
+    if (ch.direct || P.tap === false) { ch.direct = true; if (P.outId !== ch.id) openDirect(ch); }
+    else { if (P.outId) closeDirect(); openStream(ch); }           // el análisis todavía no se comprobó acá: esta emisora hace la prueba
+  }
+  /** Todo cambio de emisora es igual: se apaga la que suena, pasa el audio logo y recién entonces entra la nueva. Nunca se pisan. */
+  function tune(to, from) {
+    const seq = ++P.seq;
+    P.on = null; P.next = to.id; clearTimeout(P.swapT);
+    if (from && from !== to) fade(from, 0, C.out);
+    for (const ch of P.chans) if (ch !== from) zero(ch);
+    P.outHold = performance.now() + C.out * 1000 + 80;
+    if (from) P.swapT = setTimeout(() => { if (seq === P.seq && P.playing) ready(to); }, C.out * 1000 + 60); else ready(to);
+    ident(to.st, seq).then(() => {
+      if (seq !== P.seq || !P.playing) return;
+      P.on = to.id; P.next = null; if (to.el) to.el.muted = false;
+      tap(to); fade(to, P.dir.ducked ? .18 : 1, C.in);
+      if (P.ctx.state !== 'running') P.ctx.resume().catch(() => { /* vuelve con el próximo toque */ });
+    });
+  }
+
   async function play() {
     if (P.playing || P.starting) return;
+    stopPreview();
     const list = favs();
     if (!list.length) { go('emisoras'); toast('Elegí al menos una emisora.'); return; }
     const AC = window.AudioContext || window.webkitAudioContext;
     if (!AC) { toast('Este navegador no puede reproducir audio de esta forma.'); return; }
+    unlock(); primeVoice();                                        // dentro del toque: así iPhone habilita el reproductor y la voz
     if (!P.ctx) {
       P.ctx = new AC(); P.comp = P.ctx.createDynamicsCompressor(); P.comp.connect(P.ctx.destination);
+      P.fx = P.ctx.createGain(); P.fx.connect(P.comp);
       const len = P.ctx.sampleRate * 2; P.noise = P.ctx.createBuffer(1, len, P.ctx.sampleRate);
       const d = P.noise.getChannelData(0); for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
     }
@@ -303,18 +500,37 @@
     P.starting = false;
     if (P.playing) return;
     P.master = P.ctx.createGain(); P.master.connect(P.comp);
+    P.tap = tapKnown(); P.heardAny = false; P.on = P.next = null;
     const main = mainId(); P.mainIndex = list.findIndex(s => s.id === main);
     P.chans = list.map((st, i) => makeChan(st, i, st.id === main));
     P.dir = new E.Director({ stations: P.chans, mainId: main });
-    setGain(chan(main), 1, .5);
     P.playing = true; P.truth = 0; P.note = null;
+    for (const ch of P.chans) {
+      if (ch.demo || ch.ok === false) continue;
+      if (ch.direct) { if (ch.id !== main) check(ch); }
+      else if (ch.id === main || P.tap === true) openStream(ch);   // sin comprobar el análisis, solo se abre la favorita
+    }
+    const m = chan(main);
+    if (m.ok === false) P.on = main; else tune(m, null);            // arranca con el audio logo: "Radia sintoniza …"
     P.timers = [setInterval(features, 50), setInterval(control, 100), setInterval(second, 1000)];
     media(); paint(); renderStations();
   }
+  function makeChan(st, i, isMain) {
+    const demo = !!st.demo;
+    const ch = { id: st.id, st, demo, ok: true, live: false, delay: 0, target: 0, level: 0, fadeEnd: 0, zeroed: true, category: catOf(st), brain: new E.Brain(demo ? { maxBreak: 60, breakLen: 20 } : {}) };
+    if (blocked(st)) { ch.ok = false; return ch; }
+    if (demo) {
+      graph(ch); ch.live = true; ch.liveAt = P.ctx.currentTime;
+      const order = isMain ? 0 : i + (i < P.mainIndex ? 1 : 0);
+      ch.synth = new Synth(P.ctx, ch.input, P.noise, { category: ch.category, seed: hue(st) + 3, period: [80, 95, 110][order], adLen: [22, 24, 20][order], firstAd: [22, 75, 125][order] });
+    } else if (st.hls || P.tap === false) ch.direct = true;        // HLS nunca pasa por el grafo
+    return ch;
+  }
   function stop() {
     if (!P.playing) return;
-    P.timers.forEach(clearInterval); P.playing = false;
-    for (const ch of P.chans) { clearInterval(ch.fade); clearTimeout(ch.wd); if (ch.synth) ch.synth.stop(); if (ch.el) { ch.el.pause(); ch.el.removeAttribute('src'); ch.el.load(); ch.el = null; } ungraph(ch); }
+    P.timers.forEach(clearInterval); P.playing = false; P.seq++; P.on = P.next = null; clearTimeout(P.swapT); hush();
+    for (const ch of P.chans) { if (ch.synth) ch.synth.stop(); closeStream(ch); }
+    closeDirect();
     try { P.master.disconnect(); } catch (e) { /* ya suelto */ }
     P.chans = []; P.dir = null; persist(); paint();
   }
@@ -328,6 +544,11 @@
     for (const ch of P.chans) {
       if (!ch.an || !ch.live) continue;
       ch.an.getFloatTimeDomainData(tbuf); let s = 0; for (let i = 0; i < 1024; i++) s += tbuf[i] * tbuf[i];
+      if (ch.el && !ch.heard) {                                    // ¿de verdad le llega este stream al grafo?
+        if (s > 0) { ch.heard = true; proven(); }
+        else if (ch.el.muted) ch.liveAt = t;                       // callada a propósito: la prueba empieza cuando le toque sonar
+        else if (P.ctx.state === 'running' && t - ch.liveAt > 3 && !ch.el.paused && ch.el.currentTime > 3) { deaf(ch); continue; }
+      }
       ch.an.getFloatFrequencyData(fbuf); let num = 0, den = 0;
       for (let i = 1; i < 512; i++) { const m = Math.pow(10, fbuf[i] / 20); num += i * m; den += m; }
       const bands = [];
@@ -347,25 +568,25 @@
       if (ch.an && ch.id !== P.dir.current) ch.delay = ch.liveAt != null && now - ch.liveAt >= ch.look + 1 ? ch.look : 0;
     }
     const a = P.dir.tick(now); if (a) apply(a);
+    enforce();
   }
   function apply(a) {
     if (a.type === 'switch') {
-      const f = chan(a.from), t = chan(a.to), d = a.style.dur;
-      tap(t);
-      if (a.style.mode === 'cross') { setGain(f, 0, d); setGain(t, 1, d); } else { setGain(f, 0, d / 2); setGain(t, 1, d / 2, d / 2); }
+      const f = chan(a.from), t = chan(a.to);
+      tune(t, f);
       S.stats.switches++;
       const txt = a.reason === 'ad' ? (f.ok === false ? f.st.name + ' quedó sin señal.' : 'Tanda en ' + f.st.name + '.') + ' Pasamos a ' + t.st.name + ', match ' + a.style.match + '%.'
         : a.reason === 'return' ? 'Terminó la tanda. Volvemos a ' + t.st.name + '.' : 'Elegiste ' + t.st.name + '.';
       log(txt); P.note = { at: Date.now(), text: txt }; media();
-    } else if (a.type === 'duck') { setGain(curChan(), .18, .8); log('Todas tus emisoras están en tanda. Bajamos el volumen.'); }
-    else if (a.type === 'unduck') setGain(curChan(), 1, .8);
+    } else if (a.type === 'duck') { if (P.on) fade(curChan(), .18, .8); log('Todas tus emisoras están en tanda. Bajamos el volumen.'); }
+    else if (a.type === 'unduck') { if (P.on) fade(curChan(), 1, .8); }
     paint();
   }
   function second() {
-    const now = P.ctx.currentTime, cur = curChan(), main = chan(P.dir.mainId);
-    if (P.dir.inAd(cur, now)) S.stats.heard++;
+    const now = P.ctx.currentTime, cur = curChan(), main = chan(P.dir.mainId), onAir = P.on === cur.id;
+    if (onAir && P.dir.inAd(cur, now)) S.stats.heard++;
     else if (cur !== main && (P.dir.inAd(main, now) || main.ok === false)) S.stats.avoided++;
-    if (cur.synth && cur.synth.isAd(now - cur.delay)) P.truth++;
+    if (onAir && cur.synth && cur.synth.isAd(now - cur.delay)) P.truth++;
     diagTick(now);
     if (S.mode === 'live') { const d = new Date(Date.now() - 8000); for (const ch of P.chans) if (ch.live) sched(ch.id).observe(d.getMinutes(), ch.brain.isAdAt(now - 8), 1); if (Math.round(now) % 30 === 0) persist(); }
     else if (Math.round(now) % 15 === 0) save();
@@ -414,8 +635,8 @@
   }
   function diagText() {
     const now = P.ctx ? Math.round(P.ctx.currentTime) : 0;
-    const head = { radia: 3, ua: navigator.userAgent, modo: S.mode, margen: lookahead(), puente: !!PX(), ahora: now, suena: P.dir ? P.dir.current : null, marcas: DG.marks,
-      radios: P.chans.map(c => ({ n: c.st.name, analiza: !!c.an, senal: c.ok !== false && !!c.live, demora: c.delay, cortes: c.brain.cuts.map(Math.round), tandas: c.brain.iv.map(v => [Math.round(v.s), v.e == null ? null : Math.round(v.e), v.src]) })) };
+    const head = { radia: 4, ua: navigator.userAgent, modo: S.mode, margen: lookahead(), puente: !!PX(), ahora: now, suena: P.dir ? P.dir.current : null, alAire: P.on, analisis: P.tap, marcas: DG.marks,
+      radios: P.chans.map(c => ({ n: c.st.name, analiza: !!c.an, directa: !!c.direct, abierta: !!(c.el || c.synth || P.outId === c.id), senal: c.ok !== false && !!c.live, demora: c.delay, cortes: c.brain.cuts.map(Math.round), tandas: c.brain.iv.map(v => [Math.round(v.s), v.e == null ? null : Math.round(v.e), v.src]) })) };
     return 'RADIA-DIAG ' + JSON.stringify(head) + '\n' + DG.rows.join('\n');
   }
 
@@ -430,7 +651,7 @@
       if (PV.id !== id) return;
       if (k >= list.length) { if (cors) return attempt(0, false); note(id, { ok: false }); toast(st.name + ' no respondió.'); PV.id = null; renderStations(); return; }
       const el = new Audio(); if (cors) el.crossOrigin = 'anonymous'; el.src = via(list[k]); PV.el = el;
-      const next = () => { if (PV.el !== el) return; clearTimeout(PV.t); el.removeAttribute('src'); attempt(k + 1, cors); };
+      const next = () => { if (PV.el !== el) return; clearTimeout(PV.t); try { el.pause(); el.removeAttribute('src'); el.load(); } catch (e) { /* nada */ } attempt(k + 1, cors); };
       el.onerror = next; clearTimeout(PV.t); PV.t = setTimeout(next, 12000);
       el.onplaying = () => {
         if (PV.el !== el) return; clearTimeout(PV.t); note(id, { ok: true, cors });
@@ -471,11 +692,14 @@
       const t = P.dir.tta(cur, now), main = chan(P.dir.mainId);
       if (P.note && Date.now() - P.note.at < 4500) html = '<b>' + esc(P.note.text) + '</b>';
       else if (P.dir.ducked) { html = '<b>Todas en tanda.</b> Volumen bajo hasta que alguna vuelva.'; warn = true; }
+      else if (!P.on && P.next) html = '<b>Radia sintoniza ' + esc(cur.st.name) + '.</b>';
       else if (cur.ok && !cur.live) html = 'Conectando con ' + esc(cur.st.name) + '…';
       else if (t < Infinity && t > 0) { html = '<b>Tanda detectada.</b> Cambio en ' + Math.max(1, Math.round(t)) + ' s.'; warn = true; }
+      else if (cur !== main && P.dir.hold === cur.id) html = 'Elegiste ' + esc(cur.st.name) + '. RADIA se queda acá hasta que venga su tanda.';
       else if (cur !== main) html = esc(main.st.name) + (main.ok === false ? ' está sin señal.' : ' está en tanda. Volvemos apenas termine.');
       else html = cur.delay ? '<b>Sin publicidad a la vista.</b> Vas ' + cur.delay + ' s detrás del vivo.'
         : cur.an ? '<b>En directo.</b> RADIA ya analiza esta radio; la anticipación empieza con el primer cambio.'
+        : P.tap === false && !cur.nocors ? '<b>Sonando sin análisis.</b> Este navegador no deja analizar el audio en vivo: RADIA cambia por horario aprendido, por tus avisos o a mano.'
         : '<b>Sonando sin análisis.</b> Esta radio no deja analizar su audio: no hay cambio automático sin el puente.';
     }
     st.innerHTML = html; st.classList.toggle('is-warn', warn);
@@ -522,7 +746,7 @@
     $('#slotPill').textContent = slot.label + ', ' + slot.from + ' a ' + slot.to + ' h';
     $('#favList').innerHTML = list.map(s => row(s, true)).join('') || '<div class="empty">Tocá el signo más de una emisora para sumarla. La primera queda como favorita.</div>';
     const low = list.filter(s => { const m = matchWithMain(s); return m != null && m < 40; });
-    $('#favNote').textContent = low.length ? 'Match bajo con ' + low.map(s => s.name).join(' y ') + ' en esta franja: el cambio se va a notar. RADIA lo hace corto y sin mezclar.'
+    $('#favNote').textContent = low.length ? 'Match bajo con ' + low.map(s => s.name).join(' y ') + ' en esta franja: el cambio de clima se va a notar.'
       : list.length ? 'La estrella marca la favorita: RADIA siempre vuelve a ella cuando termina su tanda.' : '';
     const rank = s => { const p = S.probe[s.id]; return blocked(s) ? 4 : !p ? 2 : p.ok ? (p.cors ? 0 : 1) : 3; };
     const rest = stations().filter(s => !ids.has(s.id) && (!q || norm(s.name).includes(q)));
