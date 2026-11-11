@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#F2F2F7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+<title>RADIA</title>
+<style>/*CSS*/</style>
+</head>
+<body>
+<div class="app" id="app">
+  <section class="view" id="v-escuchar">
+    <header class="top"><h1>Escuchar</h1><a class="pill" id="modePill" href="#ajustes">Demo</a></header>
+    <div class="np">
+      <div class="art" id="art"><span class="art-freq" id="artFreq">–</span><span class="art-band" id="artBand"></span></div>
+      <h2 id="npName">RADIA</h2>
+      <p class="np-sub" id="npSub"></p>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+    </div>
+    <div class="radar" id="radar"></div>
+    <div class="radar-key" id="radarKey"><span>Lo que oís</span><span id="keyLive">El vivo</span></div>
+    <div class="controls">
+      <button class="soft" id="btnAd" disabled>Esto es publicidad</button>
+      <button class="play" id="btnPlay" aria-label="Reproducir"></button>
+      <button class="soft" id="btnNext" disabled>Cambiar emisora</button>
+    </div>
+    <div class="stats">
+      <div><strong id="stAvoided">0:00</strong><span>Publicidad evitada</span></div>
+      <div><strong id="stSwitches">0</strong><span>Cambios</span></div>
+      <div><strong id="stHeard">0 s</strong><span id="stHeardLabel">Se coló</span></div>
+    </div>
+    <ul class="log" id="log"></ul>
+  </section>
+
+  <section class="view" id="v-emisoras">
+    <header class="top"><h1>Emisoras</h1><span class="pill" id="slotPill"></span></header>
+    <p class="sect">Tus emisoras</p>
+    <div class="group" id="favList"></div>
+    <p class="note" id="favNote"></p>
+    <input class="search" id="search" type="search" placeholder="Buscar emisora" aria-label="Buscar emisora" autocomplete="off">
+    <p class="sect" id="catTitle">Uruguay</p>
+    <div class="group" id="catList"></div>
+    <p class="note" id="catNote"></p>
+  </section>
+
+  <section class="view" id="v-ajustes">
+    <header class="top"><h1>Ajustes</h1></header>
+    <p class="sect">Fuente de audio</p>
+    <div class="group"><div class="row"><div class="seg" id="segMode" style="flex:1">
+      <button data-mode="demo">Demo</button><button data-mode="live">Radios en vivo</button></div></div></div>
+    <p class="note" id="modeNote"></p>
+    <p class="sect">Anticipación</p>
+    <div class="group"><div class="row"><input type="range" id="delay" min="6" max="20" step="1" aria-label="Segundos de anticipación"><label id="delayVal" for="delay"></label></div></div>
+    <p class="note">Escuchás con este retraso; RADIA usa ese margen para ver la tanda antes de que te llegue. Más segundos, cambios más prolijos.</p>
+    <p class="sect">Puente de audio (opcional)</p>
+    <div class="group"><div class="row"><input class="field is-left" id="proxy" type="url" inputmode="url" placeholder="https://tu-puente.ejemplo" aria-label="Dirección del puente"></div></div>
+    <p class="note">Muchas radios no dejan que el navegador analice su audio. Con el puente incluido en el paquete (carpeta proxy), RADIA puede analizarlas todas.</p>
+    <p class="sect">Agregar una emisora a mano</p>
+    <div class="group">
+      <div class="row"><input class="field is-left" id="cName" placeholder="Nombre" aria-label="Nombre de la emisora"></div>
+      <div class="row"><input class="field is-left" id="cUrl" type="url" inputmode="url" placeholder="Dirección del stream (https://…)" aria-label="Dirección del stream"></div>
+      <div class="row"><button class="link" id="cAdd">Agregar emisora</button></div>
+    </div>
+    <p class="sect">Aprendizaje</p>
+    <div class="group">
+      <div class="row"><button class="link" id="reload">Actualizar lista de emisoras</button></div>
+      <div class="row"><button class="link is-danger" id="reset">Borrar horarios aprendidos y contadores</button></div>
+    </div>
+    <p class="note">RADIA anota en este dispositivo a qué minutos pasa la tanda cada emisora. Nada sale de acá.</p>
+  </section>
+</div>
+
+<nav class="tabs" aria-label="Secciones">
+  <a href="#escuchar" data-tab="escuchar"><svg viewBox="0 0 26 26"><path d="M4 11v4M8.5 7v12M13 4v18M17.5 8v10M22 11v4"/></svg>Escuchar</a>
+  <a href="#emisoras" data-tab="emisoras"><svg viewBox="0 0 26 26"><circle cx="13" cy="13" r="2.2"/><path d="M8 8a7 7 0 0 0 0 10M18 8a7 7 0 0 1 0 10M4.6 4.8a11.6 11.6 0 0 0 0 16.4M21.4 4.8a11.6 11.6 0 0 1 0 16.4"/></svg>Emisoras</a>
+  <a href="#ajustes" data-tab="ajustes"><svg viewBox="0 0 26 26"><path d="M4 8h10M19 8h3M4 18h3M12 18h10"/><circle cx="16.5" cy="8" r="2.5"/><circle cx="9.5" cy="18" r="2.5"/></svg>Ajustes</a>
+</nav>
+
+<dialog id="sheet"><div class="sheet">
+  <div class="sheet-head"><h3 id="shTitle"></h3><button class="link" id="shDone">Listo</button></div>
+  <p class="note" style="margin-top:0">Qué suena en cada franja. RADIA lo usa para calcular el match y lo corrige con lo que mide en vivo.</p>
+  <div class="group" id="shRows" style="margin-top:12px"></div>
+</div></dialog>
+<div class="toast" id="toast" role="status"></div>
+<script>/*ENGINE*/</script>
+<script>/*STATIONS*/</script>
+<script>/*APP*/</script>
+</body>
+</html>
