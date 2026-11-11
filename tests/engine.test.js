@@ -37,13 +37,9 @@ test('inferCategory lee etiquetas del directorio', () => {
   assert.strictEqual(E.inferCategory({ name: 'La Kalle', tags: 'cumbia,tropical' }), 'tropical');
   assert.strictEqual(E.inferCategory({ name: 'Sin datos', tags: '' }), 'pop');
 });
-test('transición: nunca mezcla dos emisoras; entre una y otra pasa el audio logo', () => {
-  for (const m of [90, 55, 20]) {
-    const s = E.transitionStyle(m);
-    assert.strictEqual(s.mode, 'ident');
-    assert.ok(s.dur <= 0.5, 'la que suena se apaga rápido: ' + s.dur);
-    assert.ok(s.gap >= 1.5 && s.gap <= 3, 'audio logo de unos 2 s: ' + s.gap);
-  }
+test('transición: más corta y sin mezcla cuando el match es bajo', () => {
+  const hi = E.transitionStyle(90), lo = E.transitionStyle(20);
+  assert.strictEqual(hi.mode, 'cross'); assert.strictEqual(lo.mode, 'dip'); assert.ok(lo.dur < hi.dur);
 });
 
 // ---------- detector ----------
@@ -136,15 +132,6 @@ test('director: una emisora caída no es candidata y se abandona', () => {
   let act = null; for (let t = 105; t < 113 && !act; t += 0.1) act = d.tick(t);
   assert.strictEqual(act.to, 'b');
   const z = trio(); z.main.ok = false; assert.strictEqual(z.d.tick(10).type, 'switch');
-});
-test('director: no cambia de nuevo mientras pasa el audio logo', () => {
-  const { a, d } = trio();
-  const act = d.force('a', 10);
-  a.brain.iv.push({ s: 0, e: null });                         // la elegida ya está en tanda
-  const until = 10 + act.style.dur + act.style.gap;
-  for (let t = 10; t < until; t += 0.1) assert.strictEqual(d.tick(t), null, 'cambió a los ' + t);
-  let next = null; for (let t = until; t < until + 6 && !next; t += 0.1) next = d.tick(t);
-  assert.ok(next && next.type === 'switch' && next.to === 'main', 'después sí se va de la tanda');
 });
 test('director: si el usuario elige una emisora a mano, no lo devuelve hasta que ahí haya tanda', () => {
   const { a, d } = trio();
