@@ -16,7 +16,7 @@
     tune: '<svg viewBox="0 0 22 22"><path d="M3 6h9.2a2.5 2.5 0 0 0 4.6 0H19V4.5h-2.2a2.5 2.5 0 0 0-4.6 0H3zm0 6.75h2.2a2.5 2.5 0 0 0 4.6 0H19v-1.5H9.8a2.5 2.5 0 0 0-4.6 0H3zM3 19h7.2a2.5 2.5 0 0 0 4.6 0H19v-1.5h-4.2a2.5 2.5 0 0 0-4.6 0H3z"/></svg>'
   };
 
-  // Catálogo de demostración. Perfiles por franja aproximados: se editan desde Emisoras.
+  // Perfiles por franja de las radios más conocidas (aproximados; se editan desde Emisoras).
   const SEED = [
     ['oceano', 'Océano FM', '93.9 FM', { '*': 'pop', manana: 'magazine', regreso: 'magazine' }, ['oceano']],
     ['delsol', 'Del Sol', '99.5 FM', { '*': 'rock', manana: 'magazine', mediamanana: 'magazine', regreso: 'magazine' }, ['del sol']],
@@ -45,19 +45,18 @@
   const KEY = 'radia.v1';
   const BRIDGE = '';                       // dirección del puente incluida en esta publicación (vacío = sin puente)
   const IN_CLAUDE = /claude|anthropic/i.test(location.hostname) || /claude/i.test(document.referrer);
-  const DEF = () => ({ mode: IN_CLAUDE ? 'demo' : 'live', favs: { demo: ['d-oceano', 'd-delsol', 'd-azul'], live: [] }, main: { demo: 'd-oceano', live: null },
+  const DEF = () => ({ mode: 'live', favs: { live: [] }, main: { live: null },
     delay: 45, v: 3, proxy: '', profiles: {}, custom: [], sched: {}, probe: {}, stats: { avoided: 0, heard: 0, switches: 0 }, catalog: [], catalogAt: 0 });
   let S = DEF();
-  try { const j = JSON.parse(localStorage.getItem(KEY) || 'null'); if (j && j.favs && j.main) { S = Object.assign(S, j); S.probe = S.probe || {}; if (j.v !== 3) { S.delay = 45; S.v = 3; S.probe = {}; } } } catch (e) { /* sin almacenamiento: se sigue en memoria */ }
+  try { const j = JSON.parse(localStorage.getItem(KEY) || 'null'); if (j && j.favs && j.main) { S = Object.assign(S, j); S.probe = S.probe || {}; S.mode = 'live'; if (j.v !== 3) { S.delay = 45; S.v = 3; S.probe = {}; } } } catch (e) { /* sin almacenamiento: se sigue en memoria */ }
   const save = () => { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { /* idem */ } };
   const PX = () => S.proxy || BRIDGE;
-  const lookahead = () => S.mode === 'demo' ? 12 : S.delay;
+  const lookahead = () => S.delay;
   const scheds = {};
   const sched = id => scheds[id] || (scheds[id] = new E.Schedule(S.sched[id]));
 
   // ---------- catálogo ----------
   let catalogState = 'idle';
-  const demoStations = () => SEED.map(([k, name, freq, profile]) => ({ id: 'd-' + k, name, freq, profile, demo: true }));
   const EXTRA = [
     [['fm hit'], { '*': 'urbano', manana: 'magazine' }], [['inolvidable'], { '*': 'retro' }], [['la diaria', 'radio oriental', 'radio america', 'nacional (la treinta)', 'continente', 'uniradio'], { '*': 'periodistico' }],
     [['carve deportiva', 'espacio sport'], { '*': 'deportes' }], [['radio rural'], { '*': 'periodistico', madrugada: 'folclore' }], [['aire fm', 'futura'], { '*': 'pop', manana: 'magazine' }],
@@ -82,12 +81,12 @@
   let cache = null, cacheKey = '';
   const stations = () => {
     const k = S.mode + S.catalog.length + S.custom.length + JSON.stringify(S.profiles);
-    if (k !== cacheKey) { cacheKey = k; cache = (S.mode === 'demo' ? demoStations() : liveStations()).map(dress); }
+    if (k !== cacheKey) { cacheKey = k; cache = liveStations().map(dress); }
     return cache;
   };
   const byId = id => stations().find(s => s.id === id);
-  const favs = () => S.favs[S.mode].map(byId).filter(Boolean);
-  const mainId = () => { const f = favs(); return f.some(s => s.id === S.main[S.mode]) ? S.main[S.mode] : (f[0] && f[0].id) || null; };
+  const favs = () => S.favs.live.map(byId).filter(Boolean);
+  const mainId = () => { const f = favs(); return f.some(s => s.id === S.main.live) ? S.main.live : (f[0] && f[0].id) || null; };
   const hourNow = () => { const d = new Date(); return d.getHours() + d.getMinutes() / 60; };
   const catOf = st => E.categoryAt(st, hourNow());
   const catLabel = c => (E.CATS[c] || E.CATS.pop).label;
@@ -95,7 +94,6 @@
   const hue = st => { let h = 7; for (const ch of st.name) h = (h * 31 + ch.charCodeAt(0)) % 9973; return HUES[h % HUES.length]; };
   const artText = st => { const p = (st.freq || '').split(' '); if (p[0]) return [p[0], p[1] || '']; return [st.name.replace(/radio|fm|am/gi, '').trim().slice(0, 2).toUpperCase() || 'FM', '']; };
   function blocked(st) {
-    if (st.demo) return '';
     if (location.protocol === 'https:' && !PX() && !st.urls.some(u => /^https:/.test(u))) return 'Necesita el puente de audio';
     if (st.hls && !document.createElement('audio').canPlayType('application/vnd.apple.mpegurl')) return 'Formato no compatible con este navegador';
     return '';
@@ -119,98 +117,8 @@
     catalogState = 'ok'; renderAll(); return false;
   }
 
-  // ---------- audio de demostración (sintético, con tandas programadas) ----------
-  const TALKY = { periodistico: 1, deportes: 1, magazine: 1, religioso: 1 };
-  const MUSIC = {
-    pop: { bpm: 112, wave: 'triangle', cut: 2200, hat: 1, kick: [0, 4] }, rock: { bpm: 132, wave: 'sawtooth', cut: 2600, hat: 1, kick: [0, 4] },
-    retro: { bpm: 100, wave: 'triangle', cut: 1600, hat: 1, kick: [0, 4] }, tropical: { bpm: 96, wave: 'square', cut: 2000, hat: 1, kick: [0, 3, 4, 7] },
-    urbano: { bpm: 92, wave: 'sawtooth', cut: 1800, hat: 1, kick: [0, 3, 4, 6] }, electronica: { bpm: 126, wave: 'sawtooth', cut: 3000, hat: 1, kick: [0, 2, 4, 6] },
-    tango: { bpm: 64, wave: 'sawtooth', cut: 1200, minor: 1, kick: [] }, folclore: { bpm: 84, wave: 'triangle', cut: 1500, kick: [] },
-    jazz: { bpm: 104, wave: 'triangle', cut: 1400, hat: 1, kick: [] }, clasica: { bpm: 60, wave: 'sine', cut: 1800, kick: [] },
-    magazine: { bpm: 100, wave: 'triangle', cut: 1400, bed: 1, kick: [] }
-  };
-  const VOW = [[700, 1200], [400, 2000], [300, 2500], [500, 900], [350, 800]];
-  class Synth {
-    constructor(ctx, out, noise, spec) {
-      Object.assign(this, spec); this.ctx = ctx;
-      let a = spec.seed >>> 0; this.r = () => { a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
-      this.talky = !!TALKY[spec.category]; this.m = MUSIC[spec.category] || (this.talky ? null : MUSIC.pop);
-      this.bus = ctx.createGain(); this.bus.connect(out);
-      this.lp = ctx.createBiquadFilter(); this.lp.type = 'lowpass'; this.lp.frequency.value = this.m ? this.m.cut : 1500; this.lp.connect(this.bus);
-      this.vo = ctx.createOscillator(); this.vo.type = 'sawtooth';
-      this.f1 = ctx.createBiquadFilter(); this.f2 = ctx.createBiquadFilter(); this.f1.type = this.f2.type = 'bandpass'; this.f1.Q.value = this.f2.Q.value = 5;
-      this.vg = ctx.createGain(); this.vg.gain.value = 0;
-      this.vo.connect(this.f1); this.vo.connect(this.f2); this.f1.connect(this.vg); this.f2.connect(this.vg); this.vg.connect(this.bus); this.vo.start();
-      this.noise = noise; this.ns = ctx.createBufferSource(); this.ns.buffer = noise; this.ns.loop = true;
-      const nf = ctx.createBiquadFilter(); nf.type = 'lowpass'; nf.frequency.value = 1500;
-      this.ng = ctx.createGain(); this.ng.gain.value = 0; this.ns.connect(nf); nf.connect(this.ng); this.ng.connect(this.bus); this.ns.start();
-      this.t0 = ctx.currentTime; this.next = this.vt = this.t0 + .06; this.step = 0; this.spot = 0; this.sy = 0; this.phrase = 9;
-      this.sd = this.m ? 60 / this.m.bpm / 2 : .25; this.root = 110 * Math.pow(2, (spec.seed % 7) / 12); this.f0 = 105 + (spec.seed % 5) * 9;
-      this.phase = ((this.period - this.adLen - this.firstAd) % this.period + this.period) % this.period;
-    }
-    tau(t) { return ((t - this.t0 + this.phase) % this.period + this.period) % this.period; }
-    isAd(t) { return t >= this.t0 && this.tau(t) >= this.period - this.adLen; }
-    spotPos(t) { return (this.tau(t) - (this.period - this.adLen)) % 5; }
-    note(f, t, d, type, lv, dest) {
-      const o = this.ctx.createOscillator(), g = this.ctx.createGain(); o.type = type; o.frequency.value = f;
-      g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(lv, t + .015); g.gain.setValueAtTime(lv, t + Math.max(.02, d - .04)); g.gain.linearRampToValueAtTime(0, t + d);
-      o.connect(g); g.connect(dest); o.start(t); o.stop(t + d + .03);
-    }
-    hit(t, d, lv, hz) {
-      const s = this.ctx.createBufferSource(), f = this.ctx.createBiquadFilter(), g = this.ctx.createGain(); s.buffer = this.noise; f.type = 'highpass'; f.frequency.value = hz;
-      g.gain.setValueAtTime(lv, t); g.gain.linearRampToValueAtTime(0, t + d); s.connect(f); f.connect(g); g.connect(this.bus); s.start(t, this.r()); s.stop(t + d + .02);
-    }
-    kick(t, lv) {
-      const o = this.ctx.createOscillator(), g = this.ctx.createGain(); o.frequency.setValueAtTime(120, t); o.frequency.exponentialRampToValueAtTime(45, t + .12);
-      g.gain.setValueAtTime(lv, t); g.gain.linearRampToValueAtTime(0, t + .14); o.connect(g); g.connect(this.bus); o.start(t); o.stop(t + .16);
-    }
-    syll(t, d, f0, F, lv) {
-      this.vo.frequency.setValueAtTime(f0, t); this.f1.frequency.setValueAtTime(F[0], t); this.f2.frequency.setValueAtTime(F[1], t);
-      const g = this.vg.gain; g.setValueAtTime(0, t); g.linearRampToValueAtTime(lv, t + .02); g.setValueAtTime(lv, t + d - .03); g.linearRampToValueAtTime(0, t + d);
-    }
-    content(t) {
-      const m = this.m; if (!m) return;
-      const bar = Math.floor(this.step / 8) % 4, prog = m.minor ? [0, 5, 7, 3] : [0, 7, 9, 5], root = this.root * Math.pow(2, prog[bar] / 12);
-      const third = (m.minor || prog[bar] === 9) ? 3 : 4, lv = m.bed ? .03 : .06, s = this.step % 8;
-      if (this.step % 4 === 0) for (const iv of [0, third, 7]) this.note(root * Math.pow(2, iv / 12), t, this.sd * 4 * .97, m.wave, lv, this.lp);
-      if (m.bed) return;
-      if ([0, 3, 4, 6].includes(s)) this.note(root / 2, t, this.sd * .9, 'triangle', .16, this.bus);
-      if (m.hat && s % 2 === 1) this.hit(t, .04, .05, 6000);
-      if (m.kick.includes(s)) this.kick(t, .28);
-    }
-    adStep(t) {
-      if (this.spotPos(t) < .3) { this.spot = 0; return; }
-      const f = 880 * Math.pow(2, ([0, 4, 7, 12, 7, 4, 9, 12][this.spot % 8] + this.seed % 5) / 12);
-      this.note(f, t, .13, 'square', .11, this.bus); if (this.spot === 0) this.note(f * 1.5, t, .3, 'square', .13, this.bus);
-      this.hit(t, .05, .09, 5000); if (this.spot % 2 === 0) this.kick(t, .3);
-      this.spot++;
-    }
-    pump() {
-      const now = this.ctx.currentTime, hz = now + (document.hidden ? 1.6 : .4);
-      while (this.next < hz) {
-        const ad = this.isAd(this.next);
-        if (this.next >= now) { if (ad) this.adStep(this.next); else this.content(this.next); }
-        this.next += ad ? .2 : this.sd; this.step++;
-      }
-      while (this.vt < hz) {
-        const t = this.vt, r = this.r;
-        if (this.isAd(t)) {
-          const k = this.spotPos(t);
-          if (k < .3) this.vt = t + (.3 - k) + .01;
-          else { const d = .08 + r() * .05; if (t >= now) this.syll(t, d, 200 + r() * 60, VOW[r() * 5 | 0].map(x => x * 1.3), .9); this.vt = t + d + .03; }
-        } else if (this.talky) {
-          const d = .11 + r() * .12; if (t >= now) this.syll(t, d, this.f0 * (.9 + r() * .25), VOW[r() * 5 | 0], .55);
-          let gap = .04 + r() * .05; if (++this.sy >= this.phrase) { this.sy = 0; this.phrase = 7 + (r() * 6 | 0); gap = .35 + r() * .3; }
-          this.vt = t + d + gap;
-        } else this.vt = t + .2;
-      }
-      this.ng.gain.setValueAtTime(this.talky && !this.isAd(hz) ? .07 : 0, hz);
-    }
-    stop() { try { this.vo.stop(); this.ns.stop(); } catch (e) { /* ya detenido */ } this.bus.disconnect(); }
-  }
-
   // ---------- reproductor ----------
-  const P = { ctx: null, chans: [], dir: null, playing: false, log: [], truth: 0, note: null };
+  const P = { ctx: null, chans: [], dir: null, playing: false, log: [], note: null, skip: {} };
   window.__radia = { P, S, E };
   const chan = id => P.chans.find(c => c.id === id);
   const curChan = () => P.dir && chan(P.dir.current);
@@ -316,16 +224,33 @@
     clearTimeout(ch.wd); ch.wd = setTimeout(() => { if (ch.el === el && !ch.live) fail(); }, 15000);
     el.play().catch(() => { /* se reintenta al tocar reproducir */ });
   }
-  function makeChan(st, i, isMain) {
-    const demo = !!st.demo;
-    const ch = { id: st.id, st, demo, ok: true, delay: 0, target: 0, category: catOf(st), brain: new E.Brain(demo ? { maxBreak: 60, breakLen: 20 } : {}) };
+  function makeChan(st) {
+    const ch = { id: st.id, st, ok: true, delay: 0, target: 0, category: catOf(st), brain: new E.Brain() };
     if (blocked(st)) { ch.ok = false; return ch; }
-    if (demo) {
-      graph(ch); ch.live = true; ch.liveAt = P.ctx.currentTime;
-      const order = isMain ? 0 : i + (i < P.mainIndex ? 1 : 0);
-      ch.synth = new Synth(P.ctx, ch.input, P.noise, { category: ch.category, seed: hue(st) + 3, period: [80, 95, 110][order], adLen: [22, 24, 20][order], firstAd: [22, 75, 125][order] });
-    } else if (window.__radia.noOwn || !SP || !window.ReadableStream) openStream(ch, true); else ownEngine(ch);
+    if (window.__radia.noOwn || !SP || !window.ReadableStream) openStream(ch, true); else ownEngine(ch);
     return ch;
+  }
+  function kill(ch) {
+    ch.gone = true; if (ch.abort) ch.abort.abort(); clearInterval(ch.fade); clearTimeout(ch.wd);
+    if (ch.el) { ch.el.pause(); ch.el.removeAttribute('src'); try { ch.el.load(); } catch (e) { /* nada */ } ch.el = null; }
+    ungraph(ch);
+  }
+  // ---------- radio de reserva: la de mejor match fuera de tus favoritas, lista por si las tres caen en tanda ----------
+  function reserveCandidates() {
+    const m = byId(mainId()), mine = new Set(S.favs.live); if (!m) return [];
+    return stations().filter(s => !mine.has(s.id) && !blocked(s) && !(P.skip[s.id] > Date.now() - 6e5) && S.probe[s.id] && S.probe[s.id].ok && S.probe[s.id].cors)
+      .map(s => ({ s, m: E.match(catOf(m), catOf(s)) })).sort((a, b) => b.m - a.m).map(x => x.s);
+  }
+  function tendReserve(now) {
+    const r = P.chans.find(c => c.tier), age = Date.now() - (P.reserveAt || 0);
+    if (r) {
+      if (P.dir.current === r.id || age < 30000) return;
+      if (r.ok !== false && r.live && !P.dir.inAd(r, now)) return;             // sirve: se queda
+      P.skip[r.id] = Date.now(); kill(r); P.chans.splice(P.chans.indexOf(r), 1);   // caída o en tanda: probar la siguiente
+    } else if (age < 8000) return;
+    P.reserveAt = Date.now();
+    const c = reserveCandidates()[0]; if (!c) return;
+    const ch = makeChan(c); ch.tier = 1; P.chans.push(ch);
   }
   function setGain(ch, to, dur, offset = 0) {
     if (!ch) return; ch.target = to;
@@ -378,10 +303,10 @@
     if (P.playing) return;
     P.master = P.ctx.createGain(); P.master.connect(P.comp);
     const main = mainId(); P.mainIndex = list.findIndex(s => s.id === main);
-    P.chans = list.map((st, i) => makeChan(st, i, st.id === main));
+    P.chans = list.map(makeChan); P.reserveAt = 0; scan();
     P.dir = new E.Director({ stations: P.chans, mainId: main });
     setGain(chan(main), 1, .5);
-    P.playing = true; P.truth = 0; P.note = null;
+    P.playing = true; P.note = null;
     P.timers = [setInterval(features, 50), setInterval(control, 100), setInterval(second, 1000)];
     media(); paint(); renderStations();
   }
@@ -389,7 +314,7 @@
     if (!P.playing) return;
     P.timers.forEach(clearInterval); P.playing = false;
     if (P.keep) P.keep.pause();
-    for (const ch of P.chans) { ch.gone = true; if (ch.abort) ch.abort.abort(); clearInterval(ch.fade); clearTimeout(ch.wd); if (ch.synth) ch.synth.stop(); if (ch.el) { ch.el.pause(); ch.el.removeAttribute('src'); ch.el.load(); ch.el = null; } ungraph(ch); }
+    P.chans.forEach(kill);
     try { P.master.disconnect(); } catch (e) { /* ya suelto */ }
     P.chans = []; P.dir = null; persist(); paint();
   }
@@ -418,7 +343,7 @@
     const now = P.ctx.currentTime, minute = new Date().getMinutes(), h = hourNow();
     for (const ch of P.chans) {
       ch.category = E.categoryAt(ch.st, h);
-      if (ch.synth) ch.synth.pump(); else if (ch.ok) ch.brain.tickClock(now, minute, sched(ch.id));
+      if (ch.ok) ch.brain.tickClock(now, minute, sched(ch.id));
       if (ch.an && ch.id !== P.dir.current) ch.delay = ch.liveAt != null && now - ch.liveAt >= ch.look + 1 ? ch.look : 0;
     }
     const a = P.dir.tick(now); if (a) apply(a);
@@ -429,7 +354,7 @@
       tap(t);
       if (a.style.mode === 'cross') { setGain(f, 0, d); setGain(t, 1, d); } else { setGain(f, 0, d / 2); setGain(t, 1, d / 2, d / 2); }
       S.stats.switches++;
-      const txt = a.reason === 'ad' ? (f.ok === false ? f.st.name + ' quedó sin señal.' : 'Tanda en ' + f.st.name + '.') + ' Pasamos a ' + t.st.name + ', match ' + a.style.match + '%.'
+      const txt = a.reason === 'ad' ? (f.ok === false || f.live === false ? f.st.name + ' quedó sin señal.' : t.tier ? 'Tus emisoras están en tanda.' : 'Tanda en ' + f.st.name + '.') + ' Pasamos a ' + t.st.name + (t.tier ? ' (reserva)' : '') + ', match ' + a.style.match + '%.'
         : a.reason === 'return' ? 'Terminó la tanda. Volvemos a ' + t.st.name + '.' : 'Elegiste ' + t.st.name + '.';
       log(txt); P.note = { at: Date.now(), text: txt }; media();
     } else if (a.type === 'duck') { setGain(curChan(), .18, .8); log('Todas tus emisoras están en tanda. Bajamos el volumen.'); }
@@ -440,10 +365,9 @@
     const now = P.ctx.currentTime, cur = curChan(), main = chan(P.dir.mainId);
     if (P.dir.inAd(cur, now)) S.stats.heard++;
     else if (cur !== main && (P.dir.inAd(main, now) || main.ok === false)) S.stats.avoided++;
-    if (cur.synth && cur.synth.isAd(now - cur.delay)) P.truth++;
+    tendReserve(now);
     diagTick(now);
-    if (S.mode === 'live') { const d = new Date(Date.now() - 8000); for (const ch of P.chans) if (ch.live) sched(ch.id).observe(d.getMinutes(), ch.brain.isAdAt(now - 8), 1); if (Math.round(now) % 30 === 0) persist(); }
-    else if (Math.round(now) % 15 === 0) save();
+    { const d = new Date(Date.now() - 8000); for (const ch of P.chans) if (ch.live) sched(ch.id).observe(d.getMinutes(), ch.brain.isAdAt(now - 8), 1); if (Math.round(now) % 30 === 0) persist(); }
   }
   function media() {
     if (!('mediaSession' in navigator) || !curChan()) return;
@@ -468,7 +392,7 @@
     note(st.id, { ok: false, via: w });
   }
   async function scan(force) {
-    if (S.mode !== 'live' || IN_CLAUDE || scanning) return;
+    if (IN_CLAUDE || scanning) return;
     const w = PX() ? 1 : 0, fresh = st => { const p = S.probe[st.id]; return p && p.via === w && Date.now() - p.at < 3 * 864e5; };
     const todo = stations().filter(st => !blocked(st) && (force || !fresh(st))); if (!todo.length) return;
     scanning = true; let i = 0;
@@ -489,8 +413,8 @@
   }
   function diagText() {
     const now = P.ctx ? Math.round(P.ctx.currentTime) : 0;
-    const head = { radia: 3, ua: navigator.userAgent, modo: S.mode, margen: lookahead(), puente: !!PX(), ahora: now, suena: P.dir ? P.dir.current : null, marcas: DG.marks,
-      radios: P.chans.map(c => ({ n: c.st.name, analiza: !!c.an, motor: c.own ? 'propio' : c.el ? 'nativo' : '-', codec: c.codec || '', porque: c.why || '', senal: c.ok !== false && !!c.live, demora: c.delay, cortes: c.brain.cuts.map(Math.round), tandas: c.brain.iv.map(v => [Math.round(v.s), v.e == null ? null : Math.round(v.e), v.src]) })) };
+    const head = { radia: 3, ua: navigator.userAgent, margen: lookahead(), puente: !!PX(), ahora: now, suena: P.dir ? P.dir.current : null, marcas: DG.marks,
+      radios: P.chans.map(c => ({ n: c.st.name, reserva: !!c.tier, analiza: !!c.an, motor: c.own ? 'propio' : c.el ? 'nativo' : '-', codec: c.codec || '', porque: c.why || '', senal: c.ok !== false && !!c.live, demora: c.delay, cortes: c.brain.cuts.map(Math.round), tandas: c.brain.iv.map(v => [Math.round(v.s), v.e == null ? null : Math.round(v.e), v.src]) })) };
     return 'RADIA-DIAG ' + JSON.stringify(head) + '\n' + DG.rows.join('\n');
   }
 
@@ -533,7 +457,7 @@
     $('#app').classList.toggle('is-playing', P.playing);
     $('#btnPlay').innerHTML = P.playing ? ICON.pause : ICON.play; $('#btnPlay').setAttribute('aria-label', P.playing ? 'Pausar' : 'Reproducir');
     $('#btnAd').disabled = $('#btnNext').disabled = !P.playing; $('#btnNext').disabled = !P.playing || list.length < 2;
-    const pill = $('#modePill'); pill.textContent = S.mode === 'demo' ? 'Demo' : 'En vivo'; pill.classList.toggle('is-live', S.mode === 'live');
+    $('#modePill').classList.toggle('is-live', P.playing);
     if (shown) {
       const [a, b] = artText(shown); $('#artFreq').textContent = a; $('#artBand').textContent = b; $('#art').style.setProperty('--h', hue(shown));
       $('#npName').textContent = shown.name; $('#npSub').textContent = catLabel(catOf(shown)) + ', franja ' + E.slotAt(hourNow()).label.toLowerCase();
@@ -541,7 +465,7 @@
     // estado
     const st = $('#status'); let html = '', warn = false;
     if (!list.length) html = 'Todavía no hay emisoras elegidas.';
-    else if (!P.playing) html = S.mode === 'demo' ? 'Demo con audio sintético: las tandas llegan cada minuto y pico para que veas los cambios.' : 'RADIA escucha tus emisoras unos segundos antes que vos y cambia cuando viene la tanda.';
+    else if (!P.playing) html = IN_CLAUDE ? 'Dentro de Claude las radios no suenan. Abrí RADIA en tu navegador.' : 'RADIA escucha tus emisoras antes que vos y cambia cuando viene la tanda.';
     else {
       const t = P.dir.tta(cur, now), main = chan(P.dir.mainId);
       if (P.note && Date.now() - P.note.at < 4500) html = '<b>' + esc(P.note.text) + '</b>';
@@ -556,7 +480,8 @@
     }
     st.innerHTML = html; st.classList.toggle('is-warn', warn);
     // radar
-    $('#radar').innerHTML = list.map(s => {
+    const lanes = list.concat(P.chans.filter(c => c.tier).map(c => c.st));
+    $('#radar').innerHTML = lanes.map(s => {
       const ch = chan(s.id), isMain = s.id === mainId(), m = matchWithMain(s);
       let blocks = '', cls = '', blind = !ch || !ch.an;
       if (ch) {
@@ -566,7 +491,7 @@
         if (cur === ch) cls += ' is-current';
       }
       const ana = !ch || ch.ok === false ? '' : !ch.live ? ', conectando' : ch.an ? ', analiza' : ', sin análisis';
-      const meta = ch && ch.ok === false ? (blocked(s) || 'Sin señal') : (isMain ? 'Favorita' : m == null ? '' : 'Match ' + m + '%') + ana;
+      const meta = ch && ch.ok === false ? (blocked(s) || 'Sin señal') : (isMain ? 'Favorita' : (ch && ch.tier ? 'Reserva, ' : '') + (m == null ? '' : (ch && ch.tier ? 'match ' : 'Match ') + m + '%')) + ana;
       return '<button class="lane' + cls + '" data-lane="' + esc(s.id) + '" aria-label="Escuchar ' + esc(s.name) + '">' +
         '<span class="lane-name"><i class="dot"></i>' + (isMain ? ICON.star : '') + '<span>' + esc(s.name) + '</span></span>' +
         '<span class="lane-meta' + (m != null && m < 40 ? ' is-low' : '') + '">' + esc(meta) + '</span>' +
@@ -575,14 +500,13 @@
     $('#radarKey').hidden = !list.length; $('#keyLive').textContent = 'El vivo, ' + lookahead() + ' s adelante';
     // contadores
     $('#stAvoided').textContent = mmss(S.stats.avoided); $('#stSwitches').textContent = S.stats.switches;
-    const demoPlaying = P.playing && S.mode === 'demo';
-    $('#stHeard').textContent = (demoPlaying ? P.truth : S.stats.heard) + ' s'; $('#stHeardLabel').textContent = demoPlaying ? 'Se coló (real)' : 'Se coló';
+    $('#stHeard').textContent = S.stats.heard + ' s';
     $('#log').innerHTML = P.log.map(l => '<li><time>' + l.time + '</time><span>' + esc(l.text) + '</span></li>').join('');
   }
 
   function row(st, inFav) {
     const isMain = st.id === mainId(), m = matchWithMain(st), why = blocked(st);
-    const pr = S.probe[st.id], tested = !st.demo && pr ? (pr.ok ? (pr.cors ? 'con anticipación' : 'suena, sin anticipación') : 'sin señal la última vez') : '';
+    const pr = S.probe[st.id], tested = pr ? (pr.ok ? (pr.cors ? 'con anticipación' : 'suena, sin anticipación') : 'sin señal la última vez') : '';
     const sub = why || (tested && !inFav ? catLabel(catOf(st)) + ', ' + tested : '') || (inFav ? catLabel(catOf(st)) + (isMain ? ', favorita' : m != null ? ', match ' + m + '%' : '')
       : catLabel(catOf(st)) + (st.freq ? ', ' + st.freq : '') + (m != null ? ', match ' + m + '%' : ''));
     const [a] = artText(st);
@@ -591,7 +515,7 @@
       (inFav ? '<button class="icon" data-prog="' + esc(st.id) + '" aria-label="Programación de ' + esc(st.name) + '">' + ICON.tune + '</button>' +
         '<button class="icon is-star' + (isMain ? ' is-on' : '') + '" data-main="' + esc(st.id) + '" aria-pressed="' + isMain + '" aria-label="Marcar ' + esc(st.name) + ' como favorita">' + ICON.star + '</button>' +
         '<button class="icon is-remove" data-fav="' + esc(st.id) + '" aria-label="Quitar ' + esc(st.name) + '">' + ICON.minus + '</button>'
-        : (st.demo || why ? '' : '<button class="icon' + (PV.id === st.id ? ' is-on' : '') + '" data-try="' + esc(st.id) + '" aria-label="Probar ' + esc(st.name) + '">' + (PV.id === st.id ? ICON.stopS : ICON.playS) + '</button>') +
+        : (why ? '' : '<button class="icon' + (PV.id === st.id ? ' is-on' : '') + '" data-try="' + esc(st.id) + '" aria-label="Probar ' + esc(st.name) + '">' + (PV.id === st.id ? ICON.stopS : ICON.playS) + '</button>') +
         '<button class="icon" data-fav="' + esc(st.id) + '" aria-label="Agregar ' + esc(st.name) + '">' + ICON.plus + '</button>') + '</div>';
   }
   function renderStations() {
@@ -603,18 +527,15 @@
       : list.length ? 'La estrella marca la favorita: RADIA siempre vuelve a ella cuando termina su tanda.' : '';
     const rank = s => { const p = S.probe[s.id]; return blocked(s) ? 4 : !p ? 2 : p.ok ? (p.cors ? 0 : 1) : 3; };
     const rest = stations().filter(s => !ids.has(s.id) && (!q || norm(s.name).includes(q)));
-    if (S.mode === 'live') rest.sort((a, b) => rank(a) - rank(b));
-    $('#catTitle').textContent = S.mode === 'demo' ? 'Catálogo de demostración' : 'Uruguay, ' + (S.catalog.length + S.custom.length) + ' emisoras';
+    rest.sort((a, b) => rank(a) - rank(b));
+    $('#catTitle').textContent = 'Uruguay, ' + (S.catalog.length + S.custom.length) + ' emisoras';
     $('#catList').innerHTML = rest.slice(0, 120).map(s => row(s, false)).join('') ||
       '<div class="empty">' + (q ? 'Ninguna emisora coincide con la búsqueda.' : 'No quedan emisoras por sumar.') + '</div>';
-    $('#catNote').textContent = S.mode === 'demo' ? 'En la demo el audio es sintético y los perfiles son aproximados. Los nombres sirven para probar el match.'
-      : (rest.length > 120 ? 'Se muestran 120. Usá el buscador para ver el resto. ' : '') + (IN_CLAUDE ? 'Dentro de Claude las radios reales no suenan: abrí RADIA en tu navegador. '
+    $('#catNote').textContent = (rest.length > 120 ? 'Se muestran 120. Usá el buscador para ver el resto. ' : '') + (IN_CLAUDE ? 'Dentro de Claude las radios reales no suenan: abrí RADIA en tu navegador. '
           : (() => { const all = stations(), ok = all.filter(s => S.probe[s.id] && S.probe[s.id].cors).length, seen = all.filter(s => S.probe[s.id]).length;
               return (scanning ? 'Revisando radios, ' + seen + ' de ' + all.length + '. ' : seen ? ok + ' de ' + seen + ' radios revisadas dejan anticipar sus tandas' + (PX() ? ' con el puente. ' : '; el resto necesita el puente (Ajustes). ') : '') + 'Primero van las que permiten cambio automático. '; })()) + 'Streams del directorio abierto radio-browser.info.';
   }
   function renderSettings() {
-    for (const b of document.querySelectorAll('#segMode button')) b.setAttribute('aria-pressed', b.dataset.mode === S.mode);
-    $('#modeNote').textContent = S.mode === 'demo' ? 'Audio sintético con tandas programadas, para ver cómo trabaja el motor en cualquier lado.' : (IN_CLAUDE ? 'Dentro de Claude los streams externos están bloqueados: abrí RADIA en tu navegador para escuchar radios reales.' : 'Radios reales de Uruguay. Las que dejan analizar su audio se anticipan; el resto cambia por horario aprendido y por tus avisos.');
     $('#delay').value = S.delay; $('#delayVal').textContent = S.delay + ' s'; $('#proxy').value = S.proxy; $('#proxy').placeholder = BRIDGE || 'https://tu-puente.workers.dev';
   }
   function renderAll() { paint(); renderStations(); renderSettings(); }
@@ -632,21 +553,16 @@
     let name = location.hash.slice(1); if (!['escuchar', 'emisoras', 'ajustes'].includes(name)) name = 'escuchar';
     for (const v of document.querySelectorAll('.view')) v.classList.toggle('is-on', v.id === 'v-' + name);
     for (const a of document.querySelectorAll('.tabs a')) { if (a.dataset.tab === name) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); }
-    if (name === 'emisoras' && S.mode === 'live' && catalogState === 'idle') loadCatalog();
+    if (name === 'emisoras' && catalogState === 'idle') loadCatalog();
     if (name === 'emisoras') scan();
     renderAll(); window.scrollTo(0, 0);
   }
-  function setMode(m) {
-    if (m === S.mode) return; stop(); S.mode = m; save(); renderAll();
-    if (m === 'live') loadCatalog().then(ok => { if (!ok) toast('Sin acceso al directorio de radios desde acá.'); });
-  }
-
   // ---------- eventos ----------
   $('#btnPlay').onclick = () => { stopPreview(); P.playing ? stop() : play(); };
   $('#btnAd').onclick = () => {
     const cur = curChan(); if (!cur) return;
     cur.brain.markAd(P.ctx.currentTime - cur.delay); DG.marks.push([Math.round(P.ctx.currentTime), P.chans.indexOf(cur)]);
-    if (S.mode === 'live') sched(cur.id).observe(new Date().getMinutes(), true, 30);
+    sched(cur.id).observe(new Date().getMinutes(), true, 30);
     toast('Anotado. RADIA lo usa para aprender los horarios de ' + cur.st.name + '.');
   };
   $('#btnNext').onclick = () => {
@@ -662,19 +578,18 @@
   $('#v-emisoras').onclick = e => {
     const tr = e.target.closest('[data-try]'); if (tr) return preview(tr.dataset.try);
     const f = e.target.closest('[data-fav]'), m = e.target.closest('[data-main]'), p = e.target.closest('[data-prog]');
-    const list = S.favs[S.mode];
+    const list = S.favs.live;
     if (p) return openSheet(p.dataset.prog);
-    if (m) { S.main[S.mode] = m.dataset.main; }
+    if (m) { S.main.live = m.dataset.main; }
     else if (f) {
       const id = f.dataset.fav, i = list.indexOf(id);
-      if (i >= 0) { list.splice(i, 1); if (S.main[S.mode] === id) S.main[S.mode] = list[0] || null; }
+      if (i >= 0) { list.splice(i, 1); if (S.main.live === id) S.main.live = list[0] || null; }
       else if (list.length >= 3) return toast('Máximo tres. Quitá una para sumar otra.');
-      else { list.push(id); if (!S.main[S.mode]) S.main[S.mode] = id; }
+      else { list.push(id); if (!S.main.live) S.main.live = id; }
     } else return;
     save(); restart(); renderAll();
   };
   $('#search').oninput = renderStations;
-  $('#segMode').onclick = e => { const b = e.target.closest('[data-mode]'); if (b) setMode(b.dataset.mode); };
   $('#delay').oninput = e => { S.delay = +e.target.value; $('#delayVal').textContent = S.delay + ' s'; };
   $('#delay').onchange = () => { save(); restart(); paint(); };
   $('#proxy').onchange = e => { S.proxy = e.target.value.trim(); save(); restart(); renderAll(); scan(true); };
@@ -687,9 +602,9 @@
     const name = $('#cName').value.trim(), url = $('#cUrl').value.trim();
     if (!name || !/^https?:\/\/.+/.test(url)) return toast('Completá el nombre y una dirección que empiece con http.');
     S.custom.unshift({ id: 'c-' + Date.now(), name, urls: [url], tags: '' }); $('#cName').value = $('#cUrl').value = ''; save();
-    toast(name + ' agregada. Está en Radios en vivo.'); renderAll();
+    toast(name + ' agregada.'); renderAll();
   };
-  $('#reload').onclick = () => { if (S.mode !== 'live') return toast('Pasá a Radios en vivo para actualizar la lista.'); loadCatalog(true).then(ok => toast(ok ? 'Lista actualizada.' : 'No se pudo actualizar desde acá.')); };
+  $('#reload').onclick = () => { loadCatalog(true).then(ok => toast(ok ? 'Lista actualizada.' : 'No se pudo actualizar desde acá.')); };
   $('#reset').onclick = () => { S.sched = {}; for (const k in scheds) delete scheds[k]; S.stats = { avoided: 0, heard: 0, switches: 0 }; save(); renderAll(); toast('Aprendizaje borrado.'); };
   $('#shDone').onclick = () => { $('#sheet').close(); restart(); };
   document.addEventListener('visibilitychange', () => { if (!document.hidden && P.playing && P.ctx.state !== 'running') P.ctx.resume().catch(() => {}); });
