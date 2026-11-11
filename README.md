@@ -26,9 +26,12 @@ Una página publicada por https solo puede reproducir streams https: 87 de las 1
 
 ## Usarla
 
-- `index.html` es la app completa en un solo archivo. Abrila en un navegador o subila a cualquier hosting estático gratuito (GitHub Pages, Cloudflare Pages, Netlify).
-- **Demo**: audio sintético con tandas programadas. Sirve para ver el motor en cualquier lado.
-- **Radios en vivo**: carga las emisoras de Uruguay desde radio-browser.info y reproduce los streams reales.
+`index.html` es la app completa en un solo archivo. Carga las radios de Uruguay y reproduce los streams reales. No hay modo demo.
+
+## Volver a la favorita y radio de reserva
+
+- La tanda de una radio se da por terminada cuando vuelve el sonido que tenía el programa antes de la tanda (15 s seguidos), cuando hay un tramo largo sin cortes, o al llegar al tope de 5 minutos. Tras el tope, el detector de esa radio descansa 90 s.
+- Además de tus emisoras, RADIA mantiene conectada una radio de reserva: la de mejor match con tu favorita entre las que permiten análisis. Solo se usa si todas tus emisoras están en tanda a la vez, y se abandona apenas una vuelve. Si la reserva cae en tanda, se reemplaza por la siguiente mejor.
 
 ## Puente gratis en Cloudflare (carpeta `puente/`)
 
