@@ -87,9 +87,9 @@
   // ---------- detector por emisora ----------
   class Brain {
     constructor(o = {}) {
-      this.o = Object.assign({ gapDb: -50, win: 3, enter: .6, enterHold: 1.5, exitHold: 5, maxBreak: 480, breakLen: 150,
+      this.o = Object.assign({ gapDb: -50, win: 3, enter: .6, enterHold: 1.5, exitHold: 5, maxBreak: 300, breakLen: 150, rest: 90,
         seg: 5, novMin: 3.5, warm: 20, minSeg: 6, maxSeg: 45, closeAfter: 50 }, o);
-      this.blocks = []; this.cuts = []; this.cutInfo = []; this.acc = null; this.open2 = null;
+      this.blocks = []; this.cuts = []; this.cutInfo = []; this.acc = null; this.open2 = null; this.ret = null; this.restUntil = -1e9; this.prog = null;
       this.frames = []; this.iv = []; this.bounds = [];
       this.base = null; this.baseC = null; this.talk = null; this.p = 0;
       this.open = null; this.gapStart = null; this.riseT = null; this.hiSince = null; this.calmSince = null;
@@ -129,7 +129,7 @@
       this.p += (raw - this.p) * clamp(dt / 1);
       if (!this.open) {
         if (raw > .25) { if (this.riseT == null) this.riseT = t; } else if (raw < .12) this.riseT = null;
-        if (this.p > o.enter) {
+        if (this.p > o.enter && !(t < this.restUntil)) {
           if (this.hiSince == null) this.hiSince = t;
           if (t - this.hiSince >= o.enterHold) {
             const s = Math.max((this.riseT == null ? t : this.riseT) - 1, t - 10);
@@ -148,7 +148,7 @@
           if (this.calmSince == null) this.calmSince = t;
           if (t - this.calmSince >= o.exitHold) this._close(this.calmSince - 1);
         } else this.calmSince = null;
-        if (this.open && t - this.open.s > o.maxBreak) { this._close(t); this.base = loud; this.baseC = cent; this.p = 0; }
+        if (this.open && t - this.open.s > o.maxBreak) { this._close(t); this.base = loud; this.baseC = cent; this.p = 0; this.restUntil = t + o.rest; }
       }
     }
     // --- v2: la tanda como sucesión de segmentos cortos de timbre distinto (no depende del volumen) ---
@@ -178,20 +178,32 @@
       const last = this.cuts[this.cuts.length - 1];
       if (peak && hist.length >= o.warm && v > thr && (last == null || B[p].t - last >= 5)) {
         const t = B[p].t, mean = (from) => { const r = new Array(K).fill(0); for (let i = 0; i < L; i++) for (let k = 0; k < K; k++) r[k] += B[from + i].shape[k] / L; return r; };
-        const info = { t, before: mean(p - L), after: mean(p) }, prev = this.cutInfo[this.cutInfo.length - 1];
+        const info = { t, v, before: mean(p - L), after: mean(p) }, prev = this.cutInfo[this.cutInfo.length - 1];
         this.cuts.push(t); this.cutInfo.push(info); if (this.cuts.length > 60) { this.cuts.shift(); this.cutInfo.shift(); }
         // si lo que suena ahora se parece a lo de antes del corte anterior, fue un inserto dentro del mismo programa
         const back = prev ? Math.sqrt(prev.before.reduce((q, x, k) => q + Math.pow(x - info.after[k], 2), 0) / K) : 0;
-        if (!this.open2 && last != null && t - last >= o.minSeg && t - last <= o.maxSeg && back > Math.max(2, .5 * v)) {      // un segmento corto y lo que sigue es otra cosa: tanda
-          this.open2 = { s: last, e: null, src: 'cuts', known: a.t0 + 1 }; this.iv.push(this.open2); this.detectedAt = a.t0 + 1;
-        }
+        if (!this.open2 && last != null && t - last >= o.minSeg && t - last <= o.maxSeg && back > Math.max(2, .5 * v) && !(a.t0 < this.restUntil)
+            && !(this.prog && this._far(info.before, this.prog) < Math.max(1.5, .45 * v))) {      // ...y el segmento corto no es el propio programa      // un segmento corto y lo que sigue es otra cosa: tanda
+          // firma del programa: cómo sonaba en los 15 s previos a la tanda. Sirve para reconocer cuándo vuelve.
+          const pre = B.filter(x => x.t >= last - 15 && x.t < last), sig = new Array(K).fill(0);
+          for (const x of pre) for (let k = 0; k < K; k++) sig[k] += x.shape[k] / pre.length;
+          this.open2 = { s: Math.max(last, this.restUntil), e: null, src: 'cuts', known: a.t0 + 1, sig: pre.length >= 5 ? sig : prev.before, lim: Math.max(1.5, .45 * prev.v) };
+          this.prog = this.open2.sig;
+          this.iv.push(this.open2); this.detectedAt = a.t0 + 1; this.ret = null;
+        } else if (this.open2 && this._far(info.after, this.open2.sig) < this.open2.lim) this.ret = t;      // ¿volvió el programa en este corte?
       }
       if (this.open2) {
-        const end = this.cuts[this.cuts.length - 1];
-        if (B[p].t - end > o.closeAfter) { this.open2.e = end; this.open2 = null; }             // un tramo largo y estable: volvió el programa
-        else if (B[p].t - this.open2.s > o.maxBreak) { this.open2.e = B[p].t; this.open2 = null; }
+        const end = this.cuts[this.cuts.length - 1], done = (e, rest) => { this.open2.e = e; this.open2.closedAt = a.t0 + 1; this.open2 = null; this.ret = null; if (rest) this.restUntil = a.t0 + o.rest; };
+        if (this.ret != null && B[p].t - this.ret >= 15) {                                      // 15 s seguidos sonando como el programa: terminó la tanda
+          const seg = B.filter(x => x.t >= this.ret && x.t < this.ret + 15), m = new Array(K).fill(0);
+          for (const x of seg) for (let k = 0; k < K; k++) m[k] += x.shape[k] / seg.length;
+          if (this._far(m, this.open2.sig) < this.open2.lim) done(this.ret); else this.ret = null;
+        }
+        if (this.open2 && B[p].t - end > o.closeAfter) done(end);                               // un tramo largo y estable: volvió el programa
+        else if (this.open2 && B[p].t - this.open2.s > o.maxBreak) done(B[p].t, true);          // tope: ninguna tanda dura tanto; el detector se toma un respiro
       }
     }
+    _far(x, y) { let q = 0; for (let k = 0; k < x.length; k++) q += Math.pow(x[k] - y[k], 2); return Math.sqrt(q / x.length); }
     _close(e) {
       if (!this.open) return;
       this.open.e = Math.max(e, this.open.s + 1);
@@ -237,11 +249,11 @@
     inAd(s, now) { return s.brain.isAdAt(this.heard(s, now)); }
     /** Segundos hasta que el oyente escucharía tanda en s (0 = ya, Infinity = nada a la vista). */
     tta(s, now) {
-      if (s.ok === false || this.inAd(s, now)) return 0;
+      if (s.ok === false || s.live === false || this.inAd(s, now)) return 0;
       const h = this.heard(s, now), n = s.brain.nextAdStart(h);
       return n == null ? Infinity : n - h;
     }
-    clean(s, now) { return s.ok !== false && this.tta(s, now) > Math.min(8, Math.max(0, (s.delay || 0) - 2)); }
+    clean(s, now) { return s.ok !== false && s.live !== false && this.tta(s, now) > Math.min(8, Math.max(0, (s.delay || 0) - 2)); }
     matchOf(a, b) { return match(a.category, b.category, { talkA: a.brain.talk, talkB: b.brain.talk }); }
     styleOf(a, b) {
       const m = this.matchOf(a, b);
@@ -256,22 +268,25 @@
     force(id, now) { const cur = this.get(this.current), to = this.get(id); if (!to || to === cur) return null; const a = this._go(to, this.styleOf(cur, to), 'manual', now); this.hold = id === this.mainId ? null : id; return a; }
     tick(now) {
       if (now < this.lockUntil) return null;
-      const cur = this.get(this.current), main = this.get(this.mainId);
-      const others = this.stations.filter(s => s !== cur && this.clean(s, now));
+      const cur = this.get(this.current), main = this.get(this.mainId), fav = s => !s.tier;
+      const clean = this.stations.filter(s => s !== cur && this.clean(s, now));
+      const favs = clean.filter(fav), pool = favs.length ? favs : clean;                      // la reserva solo entra si no queda favorita limpia
+      const best = !pool.length ? null : pool.includes(main) ? main : pool.reduce((a, b) => this.matchOf(cur, b) > this.matchOf(cur, a) ? b : a);
       const t = this.tta(cur, now);
-      if (t < Infinity) {
-        if (others.length) {
-          const best = others.includes(main) ? main : others.reduce((a, b) => this.matchOf(cur, b) > this.matchOf(cur, a) ? b : a);
+      if (t < Infinity) {                                                                     // viene (o ya está) la tanda en la que suena
+        if (best) {
           const style = this.styleOf(cur, best);
           if (t <= style.dur + this.margin) { this.hold = null; return this._go(best, style, 'ad', now); }
         } else if (t === 0 && !this.ducked && cur.ok !== false) { this.ducked = true; return { type: 'duck' }; }
         return null;
       }
       if (this.ducked) { this.ducked = false; return { type: 'unduck' }; }
-      if (cur !== main && this.hold !== cur.id && this.clean(main, now)) {
+      // volver: a la principal desde cualquier lado; desde la reserva, a la mejor favorita limpia
+      const home = cur !== main && this.hold !== cur.id && this.clean(main, now) ? main : (cur.tier && favs.length ? best : null);
+      if (home) {
         if (this.returnSince == null) this.returnSince = now;
         if (cur.brain.isQuietAt(this.heard(cur, now)) || now - this.returnSince >= this.maxWait || !cur.brain.frames.length)
-          return this._go(main, this.styleOf(cur, main), 'return', now);
+          return this._go(home, this.styleOf(cur, home), 'return', now);
       } else this.returnSince = null;
       return null;
     }
