@@ -141,3 +141,43 @@ test('director: si el usuario elige una emisora a mano, no lo devuelve hasta que
   let back = null; for (let t = 60; t < 73 && !back; t += 0.1) back = d.tick(t);
   assert.strictEqual(back.to, 'main');
 });
+
+// ---------- detector v2: tanda = segmentos cortos de timbre distinto, sin depender del volumen ----------
+function rnd(seed) { let a = seed * 2654435761 >>> 0; return () => { a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
+const shapeOf = seed => { const r = rnd(seed); return Array.from({ length: 8 }, () => -30 + (r() - .5) * 14); };
+function flat(shape, t, wob = 1) { return { db: -18 + Math.sin(t * 5.3) * .5, centroid: 1500, bands: shape.map((v, k) => v + Math.sin(t * (1.7 + k)) * wob) }; }
+function feedSegs(b, segs) { for (const [from, to, seed] of segs) { const sh = shapeOf(seed); feed(b, from, to, t => flat(sh, t)); } }
+
+test('v2: detecta una tanda de volumen parejo por sus segmentos cortos, con inicio y fin cercanos', () => {
+  const b = new E.Brain();
+  feedSegs(b, [[0, 120, 1], [120, 140, 2], [140, 165, 3], [165, 185, 4], [185, 200, 5], [200, 300, 1]]);
+  const iv = b.iv.filter(i => i.src === 'cuts');
+  assert.strictEqual(iv.length, 1, JSON.stringify(b.iv));
+  assert.ok(Math.abs(iv[0].s - 120) <= 3, 'inicio ' + iv[0].s);
+  assert.ok(iv[0].known - 120 <= 40, 'se supo a los ' + (iv[0].known - 120) + ' s');
+  assert.ok(iv[0].e != null && Math.abs(iv[0].e - 200) <= 4, 'fin ' + iv[0].e);
+  assert.ok(!b.isAdAt(100) && b.isAdAt(150) && !b.isAdAt(260));
+});
+test('v2: un cambio de tema o dos temas largos seguidos no son tanda', () => {
+  const b = new E.Brain();
+  feedSegs(b, [[0, 180, 1], [180, 380, 6], [380, 560, 7]]);
+  assert.strictEqual(b.iv.length, 0, JSON.stringify(b.iv));
+});
+test('v2: dos voces alternando en una charla no son tanda', () => {
+  const b = new E.Brain(), v1 = shapeOf(11), v2 = v1.map((x, k) => x + (k % 2 ? 3 : -3));
+  feed(b, 0, 300, t => flat(Math.floor(t / 3) % 2 ? v1 : v2, t));
+  assert.strictEqual(b.iv.length, 0, JSON.stringify(b.iv));
+});
+test('v2: sin datos de bandas no hace nada (compatibilidad)', () => {
+  const b = new E.Brain(); feed(b, 0, 60, content); assert.strictEqual(b.cuts.length, 0);
+});
+test('v2: un inserto corto que vuelve al mismo sonido (estrofa-estribillo-estrofa, locutor entre temas) no es tanda', () => {
+  const b = new E.Brain();
+  feedSegs(b, [[0, 120, 1], [120, 140, 2], [140, 260, 1], [260, 285, 3], [285, 400, 1]]);
+  assert.strictEqual(b.iv.length, 0, JSON.stringify(b.iv));
+});
+test('v2: música con variación periódica moderada no genera cortes', () => {
+  const b = new E.Brain(), base = shapeOf(21);
+  feed(b, 0, 300, t => flat(base.map((v, k) => v + 3.5 * Math.sin(2 * Math.PI * t / 8.6 + k)), t));
+  assert.strictEqual(b.iv.length, 0, JSON.stringify(b.cuts));
+});
