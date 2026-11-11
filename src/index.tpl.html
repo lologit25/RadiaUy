@@ -53,11 +53,11 @@
       <button data-mode="demo">Demo</button><button data-mode="live">Radios en vivo</button></div></div></div>
     <p class="note" id="modeNote"></p>
     <p class="sect">Anticipación</p>
-    <div class="group"><div class="row"><input type="range" id="delay" min="6" max="20" step="1" aria-label="Segundos de anticipación"><label id="delayVal" for="delay"></label></div></div>
-    <p class="note">Escuchás con este retraso; RADIA usa ese margen para ver la tanda antes de que te llegue. Más segundos, cambios más prolijos.</p>
+    <div class="group"><div class="row"><input type="range" id="delay" min="20" max="60" step="5" aria-label="Segundos de anticipación"><label id="delayVal" for="delay"></label></div></div>
+    <p class="note">RADIA necesita oír unos 30 segundos de tanda para reconocerla. Con este margen, después del primer cambio escuchás demorado y la tanda se corta antes de llegarte.</p>
     <p class="sect">Puente de audio (opcional)</p>
     <div class="group"><div class="row"><input class="field is-left" id="proxy" type="url" inputmode="url" placeholder="https://tu-puente.ejemplo" aria-label="Dirección del puente"></div></div>
-    <p class="note">Muchas radios no dejan que el navegador analice su audio. Con el puente incluido en el paquete (carpeta proxy), RADIA puede analizarlas todas.</p>
+    <p class="note">Muchas radios no dejan que el navegador analice su audio, y sin análisis no hay cambio automático. El puente (gratis en Cloudflare, carpeta puente) lo resuelve para todas.</p>
     <p class="sect">Agregar una emisora a mano</p>
     <div class="group">
       <div class="row"><input class="field is-left" id="cName" placeholder="Nombre" aria-label="Nombre de la emisora"></div>
@@ -66,6 +66,7 @@
     </div>
     <p class="sect">Aprendizaje</p>
     <div class="group">
+      <div class="row"><button class="link" id="diag">Copiar diagnóstico</button></div>
       <div class="row"><button class="link" id="reload">Actualizar lista de emisoras</button></div>
       <div class="row"><button class="link is-danger" id="reset">Borrar horarios aprendidos y contadores</button></div>
     </div>
