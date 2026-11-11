@@ -30,7 +30,24 @@ Una página publicada por https solo puede reproducir streams https: 87 de las 1
 - **Demo**: audio sintético con tandas programadas. Sirve para ver el motor en cualquier lado.
 - **Radios en vivo**: carga las emisoras de Uruguay desde radio-browser.info y reproduce los streams reales.
 
-## Puente de audio (opcional, carpeta `proxy/`)
+## Puente gratis en Cloudflare (carpeta `puente/`)
+
+Sin análisis de audio no hay cambio automático, y muchas radios no dejan que el navegador las analice. El puente reenvía el stream con ese permiso. En el plan gratuito de Cloudflare Workers no se duerme y alcanza para uso personal (100.000 conexiones por día).
+
+1. Creá una cuenta en dash.cloudflare.com.
+2. Workers & Pages, Create, Start with Hello World, Deploy.
+3. Edit code, borrá todo, pegá el contenido de `puente/worker.js`, Deploy.
+4. Copiá la dirección (`https://algo.workers.dev`) y pegala en RADIA, Ajustes, Puente de audio.
+
+El puente solo acepta los servidores de las radios del catálogo. No está probado todavía contra las radios reales.
+
+## Cómo detecta la tanda (v2)
+
+Las radios procesan el audio para que todo suene parejo, así que el volumen no delata la publicidad. RADIA mide cada segundo la forma del sonido (8 bandas) y busca cortes de timbre. Una tanda es una sucesión de segmentos cortos (6 a 45 s) de sonido distinto que no vuelve al sonido anterior. Necesita oír unos 30 s para confirmarla; por eso el margen es de 45 s.
+
+Para calibrarlo con radios reales: Ajustes, Copiar diagnóstico, después de escuchar una tanda.
+
+## Puente alternativo en Node (carpeta `proxy/`)
 
 Muchas radios no permiten que el navegador analice su audio, y otras emiten en http (un sitio https no puede reproducirlas). El puente resuelve las dos cosas.
 
