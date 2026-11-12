@@ -237,3 +237,18 @@ test('director: una emisora que perdió la señal no es destino', () => {
   const { main, a, d } = trio(); a.live = false; main.brain.iv.push({ s: 100, e: null });
   assert.strictEqual(runD(d, 105, 113)[0].to, 'b');
 });
+
+// ---------- con avisos reconocidos uno por uno ----------
+test('director: no vuelve a la favorita en el hueco entre dos avisos de la misma tanda', () => {
+  const main = st('main', 'periodistico', 45), a = st('a', 'deportes', 45), d = new E.Director({ stations: [main, a], mainId: 'main' });
+  main.brain.iv.push({ s: 100, e: 125, src: 'fp' }, { s: 150, e: 175, src: 'fp' });       // aviso conocido, aviso desconocido de 25 s, aviso conocido
+  const acts = runD(d, 120, 260);
+  assert.deepStrictEqual(acts.map(x => x.to), ['a', 'main'], JSON.stringify(acts));
+  assert.ok(acts[1].t >= 175 + 45, 'volvió a los ' + acts[1].t);
+});
+test('detector: con la detección estimada apagada, las reglas de volumen y de cortes no marcan tandas', () => {
+  const b = new E.Brain({ heur: false });
+  feed(b, 0, 60, content); feed(b, 60, 80, adAt(60)); feed(b, 80, 100, content);
+  feedSegs(b, [[100, 220, 1], [220, 240, 2], [240, 265, 3], [265, 285, 4], [285, 400, 1]]);
+  assert.strictEqual(b.iv.length, 0, JSON.stringify(b.iv)); assert.ok(b.cuts.length >= 3, 'los cortes igual se registran');
+});
