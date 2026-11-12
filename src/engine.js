@@ -129,7 +129,7 @@
       this.p += (raw - this.p) * clamp(dt / 1);
       if (!this.open) {
         if (raw > .25) { if (this.riseT == null) this.riseT = t; } else if (raw < .12) this.riseT = null;
-        if (this.p > o.enter && !(t < this.restUntil)) {
+        if (this.p > o.enter && !(t < this.restUntil) && o.heur !== false) {
           if (this.hiSince == null) this.hiSince = t;
           if (t - this.hiSince >= o.enterHold) {
             const s = Math.max((this.riseT == null ? t : this.riseT) - 1, t - 10);
@@ -182,7 +182,7 @@
         this.cuts.push(t); this.cutInfo.push(info); if (this.cuts.length > 60) { this.cuts.shift(); this.cutInfo.shift(); }
         // si lo que suena ahora se parece a lo de antes del corte anterior, fue un inserto dentro del mismo programa
         const back = prev ? Math.sqrt(prev.before.reduce((q, x, k) => q + Math.pow(x - info.after[k], 2), 0) / K) : 0;
-        if (!this.open2 && last != null && t - last >= o.minSeg && t - last <= o.maxSeg && back > Math.max(2, .5 * v) && !(a.t0 < this.restUntil)
+        if (!this.open2 && last != null && t - last >= o.minSeg && t - last <= o.maxSeg && back > Math.max(2, .5 * v) && !(a.t0 < this.restUntil) && o.heur !== false
             && !(this.prog && this._far(info.before, this.prog) < Math.max(1.5, .45 * v))) {      // ...y el segmento corto no es el propio programa      // un segmento corto y lo que sigue es otra cosa: tanda
           // firma del programa: cómo sonaba en los 15 s previos a la tanda. Sirve para reconocer cuándo vuelve.
           const pre = B.filter(x => x.t >= last - 15 && x.t < last), sig = new Array(K).fill(0);
@@ -253,7 +253,7 @@
       const h = this.heard(s, now), n = s.brain.nextAdStart(h);
       return n == null ? Infinity : n - h;
     }
-    clean(s, now) { return s.ok !== false && s.live !== false && this.tta(s, now) > Math.min(8, Math.max(0, (s.delay || 0) - 2)); }
+    clean(s, now, far) { return s.ok !== false && s.live !== false && this.tta(s, now) > Math.min(far ? 40 : 8, Math.max(0, (s.delay || 0) - (far ? 5 : 2))); }
     matchOf(a, b) { return match(a.category, b.category, { talkA: a.brain.talk, talkB: b.brain.talk }); }
     styleOf(a, b) {
       const m = this.matchOf(a, b);
@@ -282,7 +282,8 @@
       }
       if (this.ducked) { this.ducked = false; return { type: 'unduck' }; }
       // volver: a la principal desde cualquier lado; desde la reserva, a la mejor favorita limpia
-      const home = cur !== main && this.hold !== cur.id && this.clean(main, now) ? main : (cur.tier && favs.length ? best : null);
+      const home = cur !== main && this.hold !== cur.id && this.clean(main, now, true) ? main :      // para volver se pide un tramo largo sin avisos a la vista
+        (cur.tier && favs.length ? best : null);
       if (home) {
         if (this.returnSince == null) this.returnSince = now;
         if (cur.brain.isQuietAt(this.heard(cur, now)) || now - this.returnSince >= this.maxWait || !cur.brain.frames.length)
