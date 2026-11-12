@@ -160,6 +160,7 @@ dialog::backdrop{background:rgba(0,0,0,.4)}
     </div>
     <div class="radar" id="radar"></div>
     <div class="radar-key" id="radarKey"><span>Lo que oís</span><span id="keyLive">El vivo</span></div>
+    <p class="note" id="memNote"></p>
     <div class="controls">
       <button class="soft" id="btnAd" disabled>Esto es publicidad</button>
       <button class="play" id="btnPlay" aria-label="Reproducir"></button>
@@ -186,9 +187,12 @@ dialog::backdrop{background:rgba(0,0,0,.4)}
 
   <section class="view" id="v-ajustes">
     <header class="top"><h1>Ajustes</h1></header>
+    <p class="sect">Detección</p>
+    <div class="group"><div class="row"><label for="agg" style="flex:1">Detección estimada (experimental)</label><input type="checkbox" id="agg" style="width:22px;height:22px;accent-color:var(--accent)"></div></div>
+    <p class="note">RADIA reconoce cada aviso por su huella sonora: lo aprende cuando se repite o cuando tocás “Esto es publicidad”, y desde entonces lo corta sola. Es preciso, pero necesita haberlo oído antes. La detección estimada intenta además adivinar tandas nuevas por cómo suenan; atrapa más, pero se equivoca más.</p>
     <p class="sect">Anticipación</p>
-    <div class="group"><div class="row"><input type="range" id="delay" min="20" max="60" step="5" aria-label="Segundos de anticipación"><label id="delayVal" for="delay"></label></div></div>
-    <p class="note">RADIA necesita oír unos 30 segundos de tanda para reconocerla. Con este margen, después del primer cambio escuchás demorado y la tanda se corta antes de llegarte.</p>
+    <div class="group"><div class="row"><input type="range" id="delay" min="30" max="90" step="5" aria-label="Segundos de anticipación"><label id="delayVal" for="delay"></label></div></div>
+    <p class="note">Después del primer cambio escuchás con este retraso. Ese margen le da tiempo a RADIA para reconocer el aviso antes de que te llegue.</p>
     <p class="sect">Puente de audio (opcional)</p>
     <div class="group"><div class="row"><input class="field is-left" id="proxy" type="url" inputmode="url" placeholder="https://tu-puente.ejemplo" aria-label="Dirección del puente"></div></div>
     <p class="note">Muchas radios no dejan que el navegador analice su audio, y sin análisis no hay cambio automático. El puente (gratis en Cloudflare, carpeta puente) lo resuelve para todas.</p>
@@ -202,7 +206,7 @@ dialog::backdrop{background:rgba(0,0,0,.4)}
     <div class="group">
       <div class="row"><button class="link" id="diag">Copiar diagnóstico</button></div>
       <div class="row"><button class="link" id="reload">Actualizar lista de emisoras</button></div>
-      <div class="row"><button class="link is-danger" id="reset">Borrar horarios aprendidos y contadores</button></div>
+      <div class="row"><button class="link is-danger" id="reset">Borrar todo lo aprendido</button></div>
     </div>
     <p class="note">Además de tus emisoras, RADIA mantiene lista una radio de reserva, la de mejor match, por si todas las tuyas caen en tanda a la vez. RADIA anota en este dispositivo a qué minutos pasa la tanda cada emisora. Nada sale de acá.</p>
   </section>
@@ -351,7 +355,7 @@ dialog::backdrop{background:rgba(0,0,0,.4)}
       this.p += (raw - this.p) * clamp(dt / 1);
       if (!this.open) {
         if (raw > .25) { if (this.riseT == null) this.riseT = t; } else if (raw < .12) this.riseT = null;
-        if (this.p > o.enter && !(t < this.restUntil)) {
+        if (this.p > o.enter && !(t < this.restUntil) && o.heur !== false) {
           if (this.hiSince == null) this.hiSince = t;
           if (t - this.hiSince >= o.enterHold) {
             const s = Math.max((this.riseT == null ? t : this.riseT) - 1, t - 10);
@@ -404,7 +408,7 @@ dialog::backdrop{background:rgba(0,0,0,.4)}
         this.cuts.push(t); this.cutInfo.push(info); if (this.cuts.length > 60) { this.cuts.shift(); this.cutInfo.shift(); }
         // si lo que suena ahora se parece a lo de antes del corte anterior, fue un inserto dentro del mismo programa
         const back = prev ? Math.sqrt(prev.before.reduce((q, x, k) => q + Math.pow(x - info.after[k], 2), 0) / K) : 0;
-        if (!this.open2 && last != null && t - last >= o.minSeg && t - last <= o.maxSeg && back > Math.max(2, .5 * v) && !(a.t0 < this.restUntil)
+        if (!this.open2 && last != null && t - last >= o.minSeg && t - last <= o.maxSeg && back > Math.max(2, .5 * v) && !(a.t0 < this.restUntil) && o.heur !== false
             && !(this.prog && this._far(info.before, this.prog) < Math.max(1.5, .45 * v))) {      // ...y el segmento corto no es el propio programa      // un segmento corto y lo que sigue es otra cosa: tanda
           // firma del programa: cómo sonaba en los 15 s previos a la tanda. Sirve para reconocer cuándo vuelve.
           const pre = B.filter(x => x.t >= last - 15 && x.t < last), sig = new Array(K).fill(0);
@@ -475,7 +479,7 @@ dialog::backdrop{background:rgba(0,0,0,.4)}
       const h = this.heard(s, now), n = s.brain.nextAdStart(h);
       return n == null ? Infinity : n - h;
     }
-    clean(s, now) { return s.ok !== false && s.live !== false && this.tta(s, now) > Math.min(8, Math.max(0, (s.delay || 0) - 2)); }
+    clean(s, now, far) { return s.ok !== false && s.live !== false && this.tta(s, now) > Math.min(far ? 40 : 8, Math.max(0, (s.delay || 0) - (far ? 5 : 2))); }
     matchOf(a, b) { return match(a.category, b.category, { talkA: a.brain.talk, talkB: b.brain.talk }); }
     styleOf(a, b) {
       const m = this.matchOf(a, b);
@@ -504,7 +508,8 @@ dialog::backdrop{background:rgba(0,0,0,.4)}
       }
       if (this.ducked) { this.ducked = false; return { type: 'unduck' }; }
       // volver: a la principal desde cualquier lado; desde la reserva, a la mejor favorita limpia
-      const home = cur !== main && this.hold !== cur.id && this.clean(main, now) ? main : (cur.tier && favs.length ? best : null);
+      const home = cur !== main && this.hold !== cur.id && this.clean(main, now, true) ? main :      // para volver se pide un tramo largo sin avisos a la vista
+        (cur.tier && favs.length ? best : null);
       if (home) {
         if (this.returnSince == null) this.returnSince = now;
         if (cur.brain.isQuietAt(this.heard(cur, now)) || now - this.returnSince >= this.maxWait || !cur.brain.frames.length)
@@ -599,10 +604,213 @@ dialog::backdrop{background:rgba(0,0,0,.4)}
   return { header, FrameSplitter, spliceAt };
 });
 </script>
+<script>/* RADIA · reconocedor de avisos por huella acústica.
+   Idea (la misma que usan Shazam y los sistemas de monitoreo de radio): un aviso se emite muchas veces y siempre suena igual.
+   - Fingerprinter: convierte el audio en ~21 huellas de 32 bits por segundo (Haitsma-Kalker: signo de las diferencias de
+     energía entre 33 bandas de 300 a 2000 Hz y entre cuadros consecutivos). Resiste recodificación y cambios de volumen.
+   - AdMemory: recuerda las huellas de lo escuchado. Si un tramo de entre 6 y 100 s vuelve a sonar, es un aviso: lo guarda en
+     la biblioteca. Desde entonces lo reconoce en sus primeros segundos y sabe cuándo termina. Las canciones (repeticiones largas) no cuentan. */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory();
+  else root.RadiaFP = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+  const N = 2048, HOP = 256, NB = 33;
+
+  function fft(re, im) {
+    const n = re.length;
+    for (let i = 1, j = 0; i < n; i++) { let bit = n >> 1; for (; j & bit; bit >>= 1) j ^= bit; j ^= bit; if (i < j) { let t = re[i]; re[i] = re[j]; re[j] = t; t = im[i]; im[i] = im[j]; im[j] = t; } }
+    for (let len = 2; len <= n; len <<= 1) {
+      const ang = -2 * Math.PI / len, wr = Math.cos(ang), wi = Math.sin(ang), half = len >> 1;
+      for (let i = 0; i < n; i += len) {
+        let cr = 1, ci = 0;
+        for (let k = 0; k < half; k++) {
+          const a = i + k, b = a + half, xr = re[b] * cr - im[b] * ci, xi = re[b] * ci + im[b] * cr;
+          re[b] = re[a] - xr; im[b] = im[a] - xi; re[a] += xr; im[a] += xi;
+          const t = cr * wr - ci * wi; ci = cr * wi + ci * wr; cr = t;
+        }
+      }
+    }
+  }
+  const pop = x => { x = x - ((x >>> 1) & 0x55555555); x = (x & 0x33333333) + ((x >>> 2) & 0x33333333); return (((x + (x >>> 4)) & 0x0F0F0F0F) * 0x01010101) >>> 24; };
+  /** Proporción de bits distintos entre dos tiras de huellas (0 = idénticas, 0,5 = sin relación). */
+  function ber(A, ia, B, ib, n) { let d = 0; for (let i = 0; i < n; i++) d += pop(A[ia + i] ^ B[ib + i]); return d / (32 * n); }
+
+  class Fingerprinter {
+    constructor(sr) {
+      this.sr = sr; this.dec = Math.max(1, Math.round(sr / 5512)); this.fs = sr / this.dec; this.frameDur = HOP / this.fs;
+      this.buf = new Float32Array(N); this.fill = 0; this.acc = 0; this.accN = 0; this.k = 0; this.prev = null;
+      this.re = new Float64Array(N); this.im = new Float64Array(N); this.win = new Float64Array(N);
+      for (let i = 0; i < N; i++) this.win[i] = .5 - .5 * Math.cos(2 * Math.PI * i / (N - 1));
+      this.edge = []; for (let m = 0; m <= NB; m++) { let b = Math.round(300 * Math.pow(2000 / 300, m / NB) / (this.fs / N)); if (m && b <= this.edge[m - 1]) b = this.edge[m - 1] + 1; this.edge.push(b); }
+    }
+    /** Devuelve { fps, firstK }: las huellas nuevas y el número de cuadro de la primera. El cuadro k empieza en k·HOP muestras (ya diezmadas). */
+    push(x) {
+      const out = [], firstK = this.k < 1 ? 1 : this.k;
+      for (let i = 0; i < x.length; i++) {
+        this.acc += x[i]; if (++this.accN < this.dec) continue;
+        this.buf[this.fill++] = this.acc / this.dec; this.acc = 0; this.accN = 0;
+        if (this.fill < N) continue;
+        const re = this.re, im = this.im; for (let j = 0; j < N; j++) { re[j] = this.buf[j] * this.win[j]; im[j] = 0; }
+        fft(re, im);
+        const d = new Float64Array(NB - 1); let last = 0;
+        for (let m = 0; m < NB; m++) { let e = 0; for (let b = this.edge[m]; b < this.edge[m + 1]; b++) e += re[b] * re[b] + im[b] * im[b]; if (m) d[m - 1] = last - e; last = e; }
+        if (this.prev) { let f = 0; for (let m = 0; m < NB - 1; m++) if (d[m] - this.prev[m] > 0) f |= (1 << m); out.push(f >>> 0); }
+        this.prev = d; this.k++;
+        this.buf.copyWithin(0, HOP); this.fill = N - HOP;
+      }
+      return { fps: Uint32Array.from(out), firstK };
+    }
+  }
+
+  const b64 = u32 => { const b = new Uint8Array(u32.buffer, u32.byteOffset, u32.byteLength); let s = ''; for (let i = 0; i < b.length; i += 8192) s += String.fromCharCode.apply(null, b.subarray(i, i + 8192)); return btoa(s); };
+  const unb64 = s => { const r = atob(s), b = new Uint8Array(r.length); for (let i = 0; i < r.length; i++) b[i] = r.charCodeAt(i); return new Uint32Array(b.buffer, 0, b.length >> 2); };
+
+  class AdMemory {
+    constructor(o = {}) {
+      this.o = Object.assign({ cap: 1 << 19, block: 64, step: 8, thr: .25, keep: .33, minAd: 6, maxAd: 100, excl: 600, lost: 2.5, bridge: 15, fd: HOP / 5512.5 }, o);
+      this.h = new Uint32Array(this.o.cap); this.ht = new Float64Array(this.o.cap); this.n = 0; this.seg0 = 0;
+      this.T = Math.max(1 << 14, this.o.cap >> 1); this.keys = new Uint32Array(this.T); this.vals = new Int32Array(this.T); this.used = 0;
+      this.library = []; this.libIndex = new Map(); this.seq = 0;
+      this.fp = null; this.expect = null; this.t0 = 0; this.run = null; this.cover = 0; this.sinceQ = 0; this.pending = []; this.onEvent = null; this.now = 0;
+    }
+    // ---- índice de lo escuchado (uno de cada 4 cuadros, tabla de direccionamiento abierto) ----
+    _slot(f) { return (Math.imul(f ^ (f >>> 15), 0x9E3779B1) >>> 13) & (this.T - 1); }
+    _insert(f, g) {
+      if (f === 0 || f === 0xFFFFFFFF) return;
+      if (this.used > this.T * .6) this._rebuild();
+      let s = this._slot(f); while (this.vals[s] !== 0) s = (s + 1) & (this.T - 1);
+      this.keys[s] = f; this.vals[s] = g + 1; this.used++;
+    }
+    _rebuild() {
+      this.vals.fill(0); this.used = 0; const lo = Math.max(0, this.n - this.o.cap);
+      for (let g = lo + ((4 - lo % 4) % 4); g < this.n; g += 4) { const f = this.h[g % this.o.cap]; if (f === 0 || f === 0xFFFFFFFF) continue; let s = this._slot(f); while (this.vals[s] !== 0) s = (s + 1) & (this.T - 1); this.keys[s] = f; this.vals[s] = g + 1; this.used++; }
+    }
+    _lookup(f, fn) { let s = this._slot(f), tries = 0; const lo = this.n - this.o.cap; while (this.vals[s] !== 0 && tries++ < 48) { if (this.keys[s] === f) { const g = this.vals[s] - 1; if (g >= lo && this.h[g % this.o.cap] === f) fn(g); } s = (s + 1) & (this.T - 1); } }
+    _at(g) { return this.h[g % this.o.cap]; }
+    _time(g) { return this.ht[g % this.o.cap]; }
+    _emit(e) { if (this.onEvent) this.onEvent(e); }
+
+    /** Audio nuevo: x (mono), su frecuencia de muestreo y el instante t (s) de su primera muestra. */
+    push(x, sr, t) {
+      if (!this.fp || this.fp.sr !== sr || this.expect == null || Math.abs(t - this.expect) > .25) { this._break(); this.fp = new Fingerprinter(sr); this.t0 = t; this.o.fd = this.fp.frameDur; }
+      this.expect = t + x.length / sr;
+      const r = this.fp.push(x);
+      for (let i = 0; i < r.fps.length; i++) this._frame(r.fps[i], this.t0 + ((r.firstK + i) * HOP + N / 2) / this.fp.fs);
+      this.now = this.expect;
+    }
+    flush() { this._break(); }
+    _break() { if (this.run) this._finish(this.run, this.run.edge != null ? this.run.edge : this.run.last); this.seg0 = this.n; this.sinceQ = 0; this.expect = null; }
+    _frame(f, t) {
+      const g = this.n; this.h[g % this.o.cap] = f; this.ht[g % this.o.cap] = t; if (g % 4 === 0) this._insert(f, g); this.n++;
+      if (this.pending.length && t >= this.pending[0].t1 + .5) { const p = this.pending.shift(); this._learnTimes(p.t0, p.t1); }
+      if (++this.sinceQ >= this.o.step && this.n - this.seg0 >= this.o.block) { this.sinceQ = 0; this._query(); }
+    }
+    /** BER entre n cuadros actuales desde c y el otro lado de la alineación (biblioteca o historial). null si se sale de rango. */
+    _cmp(r, c, n) {
+      let d = 0;
+      if (r.lib) { const p = c - r.off, F = r.lib.fps; if (p < 0 || p + n > F.length) return null; for (let i = 0; i < n; i++) d += pop(this._at(c + i) ^ F[p + i]); }
+      else { const p = c - r.off; if (p < this.n - this.o.cap || p < 0 || p + n > c) return null; for (let i = 0; i < n; i++) d += pop(this._at(c + i) ^ this._at(p + i)); }
+      return d / (32 * n);
+    }
+    _query() {
+      const o = this.o, end = this.n;
+      if (this.run) {
+        const r = this.run, m = 24, e = this._cmp(r, end - m, m);
+        if (!r.lib) { const known = this._search(true); if (known) { this.run = null; return this._start(known); } }   // si resulta ser un aviso ya conocido, manda la biblioteca
+        if (e != null && e < o.keep) { r.last = end; r.edge = null; return; }
+        if (e == null && r.lib && end - r.off >= r.lib.fps.length) return this._finish(r, Math.min(end, r.off + r.lib.fps.length));
+        if ((end - r.last) * o.fd < o.lost) return;
+        if (r.lib) this._finish(r, this._edge(r, r.last, +1));
+        else {
+          // Repetición sin biblioteca: no se cierra enseguida. Si la coincidencia se retoma en el mismo punto (una canción
+          // interrumpida por una cortina, por ejemplo), sigue siendo el mismo tramo largo y no un aviso.
+          if (r.edge == null) r.edge = this._edge(r, r.last, +1);
+          if ((end - r.last) * o.fd >= o.bridge) this._finish(r, r.edge);
+          else return;
+        }
+      }
+      const hit = this._search(false); if (hit) this._start(hit);
+    }
+    /** Cada cuadro del bloque vota por las alineaciones donde su huella aparece exacta; se verifican las más votadas. */
+    _search(libOnly) {
+      const o = this.o, end = this.n, b0 = end - o.block; if (b0 < this.cover || b0 < this.seg0) return null;
+      const votes = new Map(), tNow = this._time(end - 1);
+      for (let i = b0; i < end; i++) {
+        const f = this._at(i), L = this.libIndex.get(f);
+        if (L) for (const code of L) { const li = Math.floor(code / 65536), off = i - (code % 65536), k = 'L' + li + ':' + off; const v = votes.get(k); if (v) v.n++; else votes.set(k, { n: 1, lib: this.library[li], off }); }
+        if (!libOnly) this._lookup(f, g => {
+          const t = this._time(g); if (g >= b0 || (t >= 0 && tNow - t < o.excl)) return;       // la misma emisión reciente no cuenta como repetición
+          const k = 'H' + (i - g), v = votes.get(k); if (v) v.n++; else votes.set(k, { n: 1, lib: null, off: i - g });
+        });
+      }
+      let best = null;
+      for (const c of [...votes.values()].sort((a, b) => b.n - a.n).slice(0, 16)) {
+        if (c.lib && c.lib.kind !== 'ad') continue;
+        const e = this._cmp(c, b0, o.block); if (e == null || e >= o.thr) continue;
+        if (!best || (c.lib && !best.lib) || (!!c.lib === !!best.lib && e < best.e)) best = { lib: c.lib, off: c.off, e };
+      }
+      return best;
+    }
+    _start(best) {
+      const o = this.o, b0 = this.n - o.block, r = this.run = { lib: best.lib, off: best.off, start: b0, last: this.n, edge: null };
+      r.start = this._edge(r, b0, -1);
+      if (r.lib) {
+        r.lib.hits++; r.lib.at = Date.now();
+        r.ev = { type: 'ad', src: 'lib', id: r.lib.id, s: this._time(r.start), e: this._time(r.start) + (r.lib.fps.length - (r.start - r.off)) * o.fd };
+        this._emit(r.ev);
+      }
+    }
+    /** Afina un borde: avanza (dir=+1) o retrocede (dir=-1) de a 4 cuadros mientras la coincidencia se mantenga. */
+    _edge(r, g, dir) {
+      const w = 16;
+      for (let k = 0; k < 6000; k++) {
+        const c = dir < 0 ? g - 4 : g + 4 - w; if (c < this.seg0 || c < this.cover || c + w > this.n) break;
+        const e = this._cmp(r, c, w); if (e == null || e >= .35) break;
+        g += 4 * dir;
+      }
+      return g;
+    }
+    _finish(r, last) {
+      this.run = null; this.cover = Math.max(this.cover, last); const o = this.o, len = (last - r.start) * o.fd;
+      if (r.lib) { const e = this._time(Math.max(r.start, last - 1)); if (Math.abs(e - r.ev.e) > 1) this._emit({ type: 'end', id: r.lib.id, s: r.ev.s, e }); return; }
+      if (len < o.minAd || len > o.maxAd) return;                          // muy corto (cortina) o muy largo (canción, repetición de programa)
+      const lib = this._learn(r.start, last, 'ad');
+      this._emit({ type: 'ad', src: 'rep', id: lib.id, s: this._time(r.start), e: this._time(last - 1) });
+    }
+    _learn(g0, g1, kind) {
+      const fps = new Uint32Array(g1 - g0); for (let i = 0; i < fps.length; i++) fps[i] = this._at(g0 + i);
+      return this._addLib({ id: ++this.seq, kind, fps, hits: 1, at: Date.now() });
+    }
+    _addLib(lib) {
+      const li = this.library.length; this.library.push(lib); this.seq = Math.max(this.seq, lib.id);
+      for (let p = 0; p < lib.fps.length && p < 65536; p += 2) { const f = lib.fps[p]; if (f === 0 || f === 0xFFFFFFFF) continue; const a = this.libIndex.get(f); if (a) a.push(li * 65536 + p); else this.libIndex.set(f, [li * 65536 + p]); }
+      return lib;
+    }
+    /** El usuario avisa que en el instante t suena publicidad: se aprende el tramo de 4 s antes a 12 s después. */
+    teach(t) { const p = { t0: t - 4, t1: t + 12 }; if (this.now >= p.t1 + .5) this._learnTimes(p.t0, p.t1); else this.pending.push(p); }
+    _learnTimes(t0, t1) {
+      let g1 = this.n; while (g1 > this.seg0 && this._time(g1 - 1) > t1) g1--;
+      let g0 = g1; while (g0 > this.seg0 && this._time(g0 - 1) >= t0) g0--;
+      if ((g1 - g0) * this.o.fd >= this.o.minAd) { const lib = this._learn(g0, g1, 'ad'); lib.manual = true; this._emit({ type: 'learned', id: lib.id }); }
+    }
+    // ---- guardar y recuperar ----
+    exportLibrary() { return this.library.map(l => ({ id: l.id, kind: l.kind, hits: l.hits, at: l.at, manual: !!l.manual, fps: b64(l.fps) })); }
+    importLibrary(arr) { for (const l of arr || []) { try { this._addLib({ id: l.id, kind: l.kind, hits: l.hits || 1, at: l.at || 0, manual: !!l.manual, fps: unb64(l.fps).slice() }); } catch (e) { /* entrada dañada */ } } }
+    importLibraryRaw(arr) { for (const l of arr || []) if (l && l.fps && l.fps.length) this._addLib({ id: l.id, kind: l.kind || 'ad', hits: l.hits || 1, at: l.at || 0, manual: !!l.manual, fps: l.fps }); }
+    exportHistory(maxFrames) { const n = Math.min(maxFrames || this.o.cap, this.n, this.o.cap), u = new Uint32Array(n); for (let i = 0; i < n; i++) u[i] = this._at(this.n - n + i); return b64(u); }
+    importHistory(s) { let u; try { u = unb64(s); } catch (e) { return; } this._break(); for (let i = 0; i < u.length; i++) { const g = this.n; this.h[g % this.o.cap] = u[i]; this.ht[g % this.o.cap] = -1; if (g % 4 === 0) this._insert(u[i], g); this.n++; } this.seg0 = this.n; }
+    exportHistoryRaw(maxFrames) { const n = Math.min(maxFrames || this.o.cap, this.n, this.o.cap), u = new Uint32Array(n); for (let i = 0; i < n; i++) u[i] = this._at(this.n - n + i); return u; }
+    importHistoryRaw(u) { if (!u || !u.length) return; this._break(); for (let i = 0; i < u.length; i++) { const g = this.n; this.h[g % this.o.cap] = u[i]; this.ht[g % this.o.cap] = -1; if (g % 4 === 0) this._insert(u[i], g); this.n++; } this.seg0 = this.cover = this.n; }
+    stats() { return { avisos: this.library.filter(l => l.kind === 'ad').length, minutos: Math.round(Math.min(this.n, this.o.cap) * this.o.fd / 60) }; }
+  }
+  return { Fingerprinter, AdMemory, ber, fft, HOP, N };
+});
+</script>
 <script>/* RADIA · interfaz y audio. El motor (match, detector, director) vive en engine.js. */
 (function () {
   'use strict';
-  const E = window.RadiaEngine;
+  const E = window.RadiaEngine, FP = window.RadiaFP;
   const $ = (s, r = document) => r.querySelector(s);
   const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   const norm = s => String(s).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
@@ -647,9 +855,9 @@ dialog::backdrop{background:rgba(0,0,0,.4)}
   const BRIDGE = '';                       // dirección del puente incluida en esta publicación (vacío = sin puente)
   const IN_CLAUDE = /claude|anthropic/i.test(location.hostname) || /claude/i.test(document.referrer);
   const DEF = () => ({ mode: 'live', favs: { live: [] }, main: { live: null },
-    delay: 45, v: 3, proxy: '', profiles: {}, custom: [], sched: {}, probe: {}, stats: { avoided: 0, heard: 0, switches: 0 }, catalog: [], catalogAt: 0 });
+    delay: 60, v: 4, agg: false, proxy: '', profiles: {}, custom: [], sched: {}, probe: {}, stats: { avoided: 0, heard: 0, switches: 0 }, catalog: [], catalogAt: 0 });
   let S = DEF();
-  try { const j = JSON.parse(localStorage.getItem(KEY) || 'null'); if (j && j.favs && j.main) { S = Object.assign(S, j); S.probe = S.probe || {}; S.mode = 'live'; if (j.v !== 3) { S.delay = 45; S.v = 3; S.probe = {}; } } } catch (e) { /* sin almacenamiento: se sigue en memoria */ }
+  try { const j = JSON.parse(localStorage.getItem(KEY) || 'null'); if (j && j.favs && j.main) { S = Object.assign(S, j); S.probe = S.probe || {}; S.mode = 'live'; if (j.v !== 4) { S.delay = 60; S.v = 4; S.agg = false; } } } catch (e) { /* sin almacenamiento: se sigue en memoria */ }
   const save = () => { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { /* idem */ } };
   const PX = () => S.proxy || BRIDGE;
   const lookahead = () => S.delay;
@@ -787,6 +995,7 @@ dialog::backdrop{background:rgba(0,0,0,.4)}
           if (joined) { g.gain.value = 0; g.gain.setValueAtTime(0, T); g.gain.linearRampToValueAtTime(1, T + X); } else g.gain.setValueAtTime(1, T);
           g.gain.setValueAtTime(1, T + len - X); g.gain.linearRampToValueAtTime(0, T + len);
           src.start(T, a / sr, len); ch.next = T + len - X;
+          if (ch.mem) { try { ch.mem.push(x.subarray(a, b - Xs), sr, T); } catch (e) { /* el reconocedor nunca debe cortar el audio */ } }
           lastOk = performance.now(); if (++got === 10) ch.retries = 0;
           if (!ch.live) { ch.live = true; ch.ok = true; ch.why = ''; ch.codec = sp.codec; if (ch.liveAt == null) ch.liveAt = now; note(ch.id, { ok: true, cors: true }); }
           while (ch.next - P.ctx.currentTime > 12 && !ch.gone) await sleep(400);
@@ -825,14 +1034,41 @@ dialog::backdrop{background:rgba(0,0,0,.4)}
     clearTimeout(ch.wd); ch.wd = setTimeout(() => { if (ch.el === el && !ch.live) fail(); }, 15000);
     el.play().catch(() => { /* se reintenta al tocar reproducir */ });
   }
+  // ---------- memoria de avisos (huella acústica), guardada en el dispositivo ----------
+  let dbp;
+  const db = () => dbp || (dbp = new Promise((res, rej) => { try { const r = indexedDB.open('radia', 1); r.onupgradeneeded = () => r.result.createObjectStore('mem'); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); } catch (e) { rej(e); } }));
+  async function loadMem(ch) {
+    try {
+      const d = await db(), rec = await new Promise((res, rej) => { const q = d.transaction('mem').objectStore('mem').get(ch.id); q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error); });
+      if (rec && !ch.gone) { ch.mem.importLibraryRaw(rec.lib); ch.mem.importHistoryRaw(rec.hist); }
+    } catch (e) { /* sin almacenamiento: aprende solo durante esta sesión */ }
+    ch.memReady = true;
+  }
+  async function saveMem(ch) {
+    if (!ch.mem || !ch.memReady) return;
+    try { const d = await db(); d.transaction('mem', 'readwrite').objectStore('mem').put({ at: Date.now(), lib: ch.mem.library.map(l => ({ id: l.id, kind: l.kind, hits: l.hits, at: l.at, manual: !!l.manual, fps: l.fps })), hist: ch.mem.exportHistoryRaw() }, ch.id); }
+    catch (e) { /* idem */ }
+  }
+  /** El reconocedor avisa: aviso reconocido (con inicio y fin), fin corregido o aviso recién aprendido. */
+  function onFp(ch, e) {
+    const iv = ch.brain.iv;
+    if (e.type === 'ad') {
+      const prev = iv.filter(v => v.src === 'fp').pop();
+      const gap = window.__radia.gap == null ? 45 : window.__radia.gap;                                   // un hueco corto entre dos avisos conocidos es otro aviso de la misma tanda
+      if (prev && e.s - prev.e > .5 && e.s - prev.e <= gap) iv.push({ s: prev.e, e: e.s, src: 'gap' });
+      iv.push({ s: e.s, e: e.e, src: 'fp', id: e.id });
+    } else if (e.type === 'end') { const v = iv.find(x => x.src === 'fp' && x.id === e.id && Math.abs(x.s - e.s) < .01); if (v) v.e = e.e; }
+  }
+  const knownAds = () => P.chans.reduce((a, c) => a + (c.mem ? c.mem.library.length : 0), 0);
   function makeChan(st) {
-    const ch = { id: st.id, st, ok: true, delay: 0, target: 0, category: catOf(st), brain: new E.Brain() };
+    const ch = { id: st.id, st, ok: true, delay: 0, target: 0, category: catOf(st), brain: new E.Brain({ heur: !!S.agg }) };
+    if (FP) { ch.mem = new FP.AdMemory({ cap: 1 << 18, excl: window.__radia.excl || 600 }); ch.mem.onEvent = e => onFp(ch, e); loadMem(ch); }
     if (blocked(st)) { ch.ok = false; return ch; }
     if (window.__radia.noOwn || !SP || !window.ReadableStream) openStream(ch, true); else ownEngine(ch);
     return ch;
   }
   function kill(ch) {
-    ch.gone = true; if (ch.abort) ch.abort.abort(); clearInterval(ch.fade); clearTimeout(ch.wd);
+    saveMem(ch); ch.gone = true; if (ch.abort) ch.abort.abort(); clearInterval(ch.fade); clearTimeout(ch.wd);
     if (ch.el) { ch.el.pause(); ch.el.removeAttribute('src'); try { ch.el.load(); } catch (e) { /* nada */ } ch.el = null; }
     ungraph(ch);
   }
@@ -967,6 +1203,7 @@ dialog::backdrop{background:rgba(0,0,0,.4)}
     if (P.dir.inAd(cur, now)) S.stats.heard++;
     else if (cur !== main && (P.dir.inAd(main, now) || main.ok === false)) S.stats.avoided++;
     tendReserve(now);
+    if (Math.round(now) % 120 === 0) P.chans.forEach(saveMem);
     diagTick(now);
     { const d = new Date(Date.now() - 8000); for (const ch of P.chans) if (ch.live) sched(ch.id).observe(d.getMinutes(), ch.brain.isAdAt(now - 8), 1); if (Math.round(now) % 30 === 0) persist(); }
   }
@@ -1015,7 +1252,7 @@ dialog::backdrop{background:rgba(0,0,0,.4)}
   function diagText() {
     const now = P.ctx ? Math.round(P.ctx.currentTime) : 0;
     const head = { radia: 3, ua: navigator.userAgent, margen: lookahead(), puente: !!PX(), ahora: now, suena: P.dir ? P.dir.current : null, marcas: DG.marks,
-      radios: P.chans.map(c => ({ n: c.st.name, reserva: !!c.tier, analiza: !!c.an, motor: c.own ? 'propio' : c.el ? 'nativo' : '-', codec: c.codec || '', porque: c.why || '', senal: c.ok !== false && !!c.live, demora: c.delay, cortes: c.brain.cuts.map(Math.round), tandas: c.brain.iv.map(v => [Math.round(v.s), v.e == null ? null : Math.round(v.e), v.src]) })) };
+      estimada: !!S.agg, radios: P.chans.map(c => ({ n: c.st.name, reserva: !!c.tier, memoria: c.mem ? c.mem.stats() : null, avisos: c.brain.iv.filter(v => v.src === 'fp').length, analiza: !!c.an, motor: c.own ? 'propio' : c.el ? 'nativo' : '-', codec: c.codec || '', porque: c.why || '', senal: c.ok !== false && !!c.live, demora: c.delay, cortes: c.brain.cuts.map(Math.round), tandas: c.brain.iv.map(v => [Math.round(v.s), v.e == null ? null : Math.round(v.e), v.src]) })) };
     return 'RADIA-DIAG ' + JSON.stringify(head) + '\n' + DG.rows.join('\n');
   }
 
@@ -1075,7 +1312,7 @@ dialog::backdrop{background:rgba(0,0,0,.4)}
       else if (t < Infinity && t > 0) { html = '<b>Tanda detectada.</b> Cambio en ' + Math.max(1, Math.round(t)) + ' s.'; warn = true; }
       else if (cur !== main) html = esc(main.st.name) + (main.ok === false ? ' está sin señal.' : ' está en tanda. Volvemos apenas termine.');
       else html = cur.delay ? '<b>Sin publicidad a la vista.</b> Vas ' + cur.delay + ' s detrás del vivo.'
-        : cur.an ? '<b>En directo.</b> RADIA ya analiza esta radio; la anticipación empieza con el primer cambio.'
+        : cur.an ? (cur.mem && !cur.mem.library.length && !S.agg ? '<b>Aprendiendo.</b> Todavía no conozco avisos de esta radio. Tocá “Esto es publicidad” cuando suene uno.' : '<b>En directo.</b> La anticipación empieza con el primer cambio de emisora.')
         : cur.why === 'formato' || cur.why === 'ceros' ? '<b>Sonando sin análisis.</b> El formato de esta radio no se puede analizar en este navegador.'
         : '<b>Sonando sin análisis.</b> Esta radio no da permiso para leer su audio: hace falta el puente (Ajustes).';
     }
@@ -1091,13 +1328,14 @@ dialog::backdrop{background:rgba(0,0,0,.4)}
         if (ch.ok === false) cls = ' is-down'; else if (ch.brain.isAdAt(heard)) cls = ' is-ad';
         if (cur === ch) cls += ' is-current';
       }
-      const ana = !ch || ch.ok === false ? '' : !ch.live ? ', conectando' : ch.an ? ', analiza' : ', sin análisis';
+      const ana = !ch || ch.ok === false ? '' : !ch.live ? ', conectando' : !ch.an ? ', sin análisis' : ch.mem ? ', ' + ch.mem.library.length + (ch.mem.library.length === 1 ? ' aviso' : ' avisos') : ', analiza';
       const meta = ch && ch.ok === false ? (blocked(s) || 'Sin señal') : (isMain ? 'Favorita' : (ch && ch.tier ? 'Reserva, ' : '') + (m == null ? '' : (ch && ch.tier ? 'match ' : 'Match ') + m + '%')) + ana;
       return '<button class="lane' + cls + '" data-lane="' + esc(s.id) + '" aria-label="Escuchar ' + esc(s.name) + '">' +
         '<span class="lane-name"><i class="dot"></i>' + (isMain ? ICON.star : '') + '<span>' + esc(s.name) + '</span></span>' +
         '<span class="lane-meta' + (m != null && m < 40 ? ' is-low' : '') + '">' + esc(meta) + '</span>' +
         '<span class="track' + (P.playing && blind ? ' is-blind' : '') + '">' + blocks + '</span></button>';
     }).join('') || '<div class="empty">Sumá emisoras desde la pestaña Emisoras.</div>';
+    $('#memNote').textContent = !P.playing ? '' : 'RADIA conoce ' + knownAds() + ' avisos de estas radios. Aprende uno cuando se repite o cuando tocás “Esto es publicidad”.';
     $('#radarKey').hidden = !list.length; $('#keyLive').textContent = 'El vivo, ' + lookahead() + ' s adelante';
     // contadores
     $('#stAvoided').textContent = mmss(S.stats.avoided); $('#stSwitches').textContent = S.stats.switches;
@@ -1137,7 +1375,7 @@ dialog::backdrop{background:rgba(0,0,0,.4)}
               return (scanning ? 'Revisando radios, ' + seen + ' de ' + all.length + '. ' : seen ? ok + ' de ' + seen + ' radios revisadas dejan anticipar sus tandas' + (PX() ? ' con el puente. ' : '; el resto necesita el puente (Ajustes). ') : '') + 'Primero van las que permiten cambio automático. '; })()) + 'Streams del directorio abierto radio-browser.info.';
   }
   function renderSettings() {
-    $('#delay').value = S.delay; $('#delayVal').textContent = S.delay + ' s'; $('#proxy').value = S.proxy; $('#proxy').placeholder = BRIDGE || 'https://tu-puente.workers.dev';
+    $('#agg').checked = !!S.agg; $('#delay').value = S.delay; $('#delayVal').textContent = S.delay + ' s'; $('#proxy').value = S.proxy; $('#proxy').placeholder = BRIDGE || 'https://tu-puente.workers.dev';
   }
   function renderAll() { paint(); renderStations(); renderSettings(); }
 
@@ -1162,9 +1400,9 @@ dialog::backdrop{background:rgba(0,0,0,.4)}
   $('#btnPlay').onclick = () => { stopPreview(); P.playing ? stop() : play(); };
   $('#btnAd').onclick = () => {
     const cur = curChan(); if (!cur) return;
-    cur.brain.markAd(P.ctx.currentTime - cur.delay); DG.marks.push([Math.round(P.ctx.currentTime), P.chans.indexOf(cur)]);
+    const heard = P.ctx.currentTime - cur.delay; cur.brain.markAd(heard); if (cur.mem) cur.mem.teach(heard); DG.marks.push([Math.round(P.ctx.currentTime), P.chans.indexOf(cur)]);
     sched(cur.id).observe(new Date().getMinutes(), true, 30);
-    toast('Anotado. RADIA lo usa para aprender los horarios de ' + cur.st.name + '.');
+    toast(cur.mem ? 'Aprendido. La próxima vez que suene este aviso, RADIA lo corta sola.' : 'Anotado. Esta radio no se puede analizar, así que RADIA solo aprende su horario.');
   };
   $('#btnNext').onclick = () => {
     if (!P.playing) return; const i = P.chans.indexOf(curChan());
@@ -1191,6 +1429,7 @@ dialog::backdrop{background:rgba(0,0,0,.4)}
     save(); restart(); renderAll();
   };
   $('#search').oninput = renderStations;
+  $('#agg').onchange = e => { S.agg = e.target.checked; save(); restart(); renderAll(); };
   $('#delay').oninput = e => { S.delay = +e.target.value; $('#delayVal').textContent = S.delay + ' s'; };
   $('#delay').onchange = () => { save(); restart(); paint(); };
   $('#proxy').onchange = e => { S.proxy = e.target.value.trim(); save(); restart(); renderAll(); scan(true); };
@@ -1206,11 +1445,11 @@ dialog::backdrop{background:rgba(0,0,0,.4)}
     toast(name + ' agregada.'); renderAll();
   };
   $('#reload').onclick = () => { loadCatalog(true).then(ok => toast(ok ? 'Lista actualizada.' : 'No se pudo actualizar desde acá.')); };
-  $('#reset').onclick = () => { S.sched = {}; for (const k in scheds) delete scheds[k]; S.stats = { avoided: 0, heard: 0, switches: 0 }; save(); renderAll(); toast('Aprendizaje borrado.'); };
+  $('#reset').onclick = () => { stop(); db().then(d => d.transaction('mem', 'readwrite').objectStore('mem').clear()).catch(() => {}); S.sched = {}; for (const k in scheds) delete scheds[k]; S.stats = { avoided: 0, heard: 0, switches: 0 }; save(); renderAll(); toast('Aprendizaje borrado.'); };
   $('#shDone').onclick = () => { $('#sheet').close(); restart(); };
   document.addEventListener('visibilitychange', () => { if (!document.hidden && P.playing && P.ctx.state !== 'running') P.ctx.resume().catch(() => {}); });
   window.addEventListener('hashchange', route);
-  window.addEventListener('pagehide', persist);
+  window.addEventListener('pagehide', () => { persist(); P.chans.forEach(saveMem); });
   setInterval(() => { if (P.playing) paint(); }, 250);
   route();
 })();
