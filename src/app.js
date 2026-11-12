@@ -1,7 +1,7 @@
 /* RADIA · interfaz y audio. El motor (match, detector, director) vive en engine.js. */
 (function () {
   'use strict';
-  const E = window.RadiaEngine;
+  const E = window.RadiaEngine, FP = window.RadiaFP;
   const $ = (s, r = document) => r.querySelector(s);
   const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   const norm = s => String(s).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
@@ -46,9 +46,9 @@
   const BRIDGE = '';                       // dirección del puente incluida en esta publicación (vacío = sin puente)
   const IN_CLAUDE = /claude|anthropic/i.test(location.hostname) || /claude/i.test(document.referrer);
   const DEF = () => ({ mode: 'live', favs: { live: [] }, main: { live: null },
-    delay: 45, v: 3, proxy: '', profiles: {}, custom: [], sched: {}, probe: {}, stats: { avoided: 0, heard: 0, switches: 0 }, catalog: [], catalogAt: 0 });
+    delay: 60, v: 4, agg: false, proxy: '', profiles: {}, custom: [], sched: {}, probe: {}, stats: { avoided: 0, heard: 0, switches: 0 }, catalog: [], catalogAt: 0 });
   let S = DEF();
-  try { const j = JSON.parse(localStorage.getItem(KEY) || 'null'); if (j && j.favs && j.main) { S = Object.assign(S, j); S.probe = S.probe || {}; S.mode = 'live'; if (j.v !== 3) { S.delay = 45; S.v = 3; S.probe = {}; } } } catch (e) { /* sin almacenamiento: se sigue en memoria */ }
+  try { const j = JSON.parse(localStorage.getItem(KEY) || 'null'); if (j && j.favs && j.main) { S = Object.assign(S, j); S.probe = S.probe || {}; S.mode = 'live'; if (j.v !== 4) { S.delay = 60; S.v = 4; S.agg = false; } } } catch (e) { /* sin almacenamiento: se sigue en memoria */ }
   const save = () => { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { /* idem */ } };
   const PX = () => S.proxy || BRIDGE;
   const lookahead = () => S.delay;
@@ -186,6 +186,7 @@
           if (joined) { g.gain.value = 0; g.gain.setValueAtTime(0, T); g.gain.linearRampToValueAtTime(1, T + X); } else g.gain.setValueAtTime(1, T);
           g.gain.setValueAtTime(1, T + len - X); g.gain.linearRampToValueAtTime(0, T + len);
           src.start(T, a / sr, len); ch.next = T + len - X;
+          if (ch.mem) { try { ch.mem.push(x.subarray(a, b - Xs), sr, T); } catch (e) { /* el reconocedor nunca debe cortar el audio */ } }
           lastOk = performance.now(); if (++got === 10) ch.retries = 0;
           if (!ch.live) { ch.live = true; ch.ok = true; ch.why = ''; ch.codec = sp.codec; if (ch.liveAt == null) ch.liveAt = now; note(ch.id, { ok: true, cors: true }); }
           while (ch.next - P.ctx.currentTime > 12 && !ch.gone) await sleep(400);
@@ -224,14 +225,41 @@
     clearTimeout(ch.wd); ch.wd = setTimeout(() => { if (ch.el === el && !ch.live) fail(); }, 15000);
     el.play().catch(() => { /* se reintenta al tocar reproducir */ });
   }
+  // ---------- memoria de avisos (huella acústica), guardada en el dispositivo ----------
+  let dbp;
+  const db = () => dbp || (dbp = new Promise((res, rej) => { try { const r = indexedDB.open('radia', 1); r.onupgradeneeded = () => r.result.createObjectStore('mem'); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); } catch (e) { rej(e); } }));
+  async function loadMem(ch) {
+    try {
+      const d = await db(), rec = await new Promise((res, rej) => { const q = d.transaction('mem').objectStore('mem').get(ch.id); q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error); });
+      if (rec && !ch.gone) { ch.mem.importLibraryRaw(rec.lib); ch.mem.importHistoryRaw(rec.hist); }
+    } catch (e) { /* sin almacenamiento: aprende solo durante esta sesión */ }
+    ch.memReady = true;
+  }
+  async function saveMem(ch) {
+    if (!ch.mem || !ch.memReady) return;
+    try { const d = await db(); d.transaction('mem', 'readwrite').objectStore('mem').put({ at: Date.now(), lib: ch.mem.library.map(l => ({ id: l.id, kind: l.kind, hits: l.hits, at: l.at, manual: !!l.manual, fps: l.fps })), hist: ch.mem.exportHistoryRaw() }, ch.id); }
+    catch (e) { /* idem */ }
+  }
+  /** El reconocedor avisa: aviso reconocido (con inicio y fin), fin corregido o aviso recién aprendido. */
+  function onFp(ch, e) {
+    const iv = ch.brain.iv;
+    if (e.type === 'ad') {
+      const prev = iv.filter(v => v.src === 'fp').pop();
+      const gap = window.__radia.gap == null ? 45 : window.__radia.gap;                                   // un hueco corto entre dos avisos conocidos es otro aviso de la misma tanda
+      if (prev && e.s - prev.e > .5 && e.s - prev.e <= gap) iv.push({ s: prev.e, e: e.s, src: 'gap' });
+      iv.push({ s: e.s, e: e.e, src: 'fp', id: e.id });
+    } else if (e.type === 'end') { const v = iv.find(x => x.src === 'fp' && x.id === e.id && Math.abs(x.s - e.s) < .01); if (v) v.e = e.e; }
+  }
+  const knownAds = () => P.chans.reduce((a, c) => a + (c.mem ? c.mem.library.length : 0), 0);
   function makeChan(st) {
-    const ch = { id: st.id, st, ok: true, delay: 0, target: 0, category: catOf(st), brain: new E.Brain() };
+    const ch = { id: st.id, st, ok: true, delay: 0, target: 0, category: catOf(st), brain: new E.Brain({ heur: !!S.agg }) };
+    if (FP) { ch.mem = new FP.AdMemory({ cap: 1 << 18, excl: window.__radia.excl || 600 }); ch.mem.onEvent = e => onFp(ch, e); loadMem(ch); }
     if (blocked(st)) { ch.ok = false; return ch; }
     if (window.__radia.noOwn || !SP || !window.ReadableStream) openStream(ch, true); else ownEngine(ch);
     return ch;
   }
   function kill(ch) {
-    ch.gone = true; if (ch.abort) ch.abort.abort(); clearInterval(ch.fade); clearTimeout(ch.wd);
+    saveMem(ch); ch.gone = true; if (ch.abort) ch.abort.abort(); clearInterval(ch.fade); clearTimeout(ch.wd);
     if (ch.el) { ch.el.pause(); ch.el.removeAttribute('src'); try { ch.el.load(); } catch (e) { /* nada */ } ch.el = null; }
     ungraph(ch);
   }
@@ -366,6 +394,7 @@
     if (P.dir.inAd(cur, now)) S.stats.heard++;
     else if (cur !== main && (P.dir.inAd(main, now) || main.ok === false)) S.stats.avoided++;
     tendReserve(now);
+    if (Math.round(now) % 120 === 0) P.chans.forEach(saveMem);
     diagTick(now);
     { const d = new Date(Date.now() - 8000); for (const ch of P.chans) if (ch.live) sched(ch.id).observe(d.getMinutes(), ch.brain.isAdAt(now - 8), 1); if (Math.round(now) % 30 === 0) persist(); }
   }
@@ -414,7 +443,7 @@
   function diagText() {
     const now = P.ctx ? Math.round(P.ctx.currentTime) : 0;
     const head = { radia: 3, ua: navigator.userAgent, margen: lookahead(), puente: !!PX(), ahora: now, suena: P.dir ? P.dir.current : null, marcas: DG.marks,
-      radios: P.chans.map(c => ({ n: c.st.name, reserva: !!c.tier, analiza: !!c.an, motor: c.own ? 'propio' : c.el ? 'nativo' : '-', codec: c.codec || '', porque: c.why || '', senal: c.ok !== false && !!c.live, demora: c.delay, cortes: c.brain.cuts.map(Math.round), tandas: c.brain.iv.map(v => [Math.round(v.s), v.e == null ? null : Math.round(v.e), v.src]) })) };
+      estimada: !!S.agg, radios: P.chans.map(c => ({ n: c.st.name, reserva: !!c.tier, memoria: c.mem ? c.mem.stats() : null, avisos: c.brain.iv.filter(v => v.src === 'fp').length, analiza: !!c.an, motor: c.own ? 'propio' : c.el ? 'nativo' : '-', codec: c.codec || '', porque: c.why || '', senal: c.ok !== false && !!c.live, demora: c.delay, cortes: c.brain.cuts.map(Math.round), tandas: c.brain.iv.map(v => [Math.round(v.s), v.e == null ? null : Math.round(v.e), v.src]) })) };
     return 'RADIA-DIAG ' + JSON.stringify(head) + '\n' + DG.rows.join('\n');
   }
 
@@ -474,7 +503,7 @@
       else if (t < Infinity && t > 0) { html = '<b>Tanda detectada.</b> Cambio en ' + Math.max(1, Math.round(t)) + ' s.'; warn = true; }
       else if (cur !== main) html = esc(main.st.name) + (main.ok === false ? ' está sin señal.' : ' está en tanda. Volvemos apenas termine.');
       else html = cur.delay ? '<b>Sin publicidad a la vista.</b> Vas ' + cur.delay + ' s detrás del vivo.'
-        : cur.an ? '<b>En directo.</b> RADIA ya analiza esta radio; la anticipación empieza con el primer cambio.'
+        : cur.an ? (cur.mem && !cur.mem.library.length && !S.agg ? '<b>Aprendiendo.</b> Todavía no conozco avisos de esta radio. Tocá “Esto es publicidad” cuando suene uno.' : '<b>En directo.</b> La anticipación empieza con el primer cambio de emisora.')
         : cur.why === 'formato' || cur.why === 'ceros' ? '<b>Sonando sin análisis.</b> El formato de esta radio no se puede analizar en este navegador.'
         : '<b>Sonando sin análisis.</b> Esta radio no da permiso para leer su audio: hace falta el puente (Ajustes).';
     }
@@ -490,13 +519,14 @@
         if (ch.ok === false) cls = ' is-down'; else if (ch.brain.isAdAt(heard)) cls = ' is-ad';
         if (cur === ch) cls += ' is-current';
       }
-      const ana = !ch || ch.ok === false ? '' : !ch.live ? ', conectando' : ch.an ? ', analiza' : ', sin análisis';
+      const ana = !ch || ch.ok === false ? '' : !ch.live ? ', conectando' : !ch.an ? ', sin análisis' : ch.mem ? ', ' + ch.mem.library.length + (ch.mem.library.length === 1 ? ' aviso' : ' avisos') : ', analiza';
       const meta = ch && ch.ok === false ? (blocked(s) || 'Sin señal') : (isMain ? 'Favorita' : (ch && ch.tier ? 'Reserva, ' : '') + (m == null ? '' : (ch && ch.tier ? 'match ' : 'Match ') + m + '%')) + ana;
       return '<button class="lane' + cls + '" data-lane="' + esc(s.id) + '" aria-label="Escuchar ' + esc(s.name) + '">' +
         '<span class="lane-name"><i class="dot"></i>' + (isMain ? ICON.star : '') + '<span>' + esc(s.name) + '</span></span>' +
         '<span class="lane-meta' + (m != null && m < 40 ? ' is-low' : '') + '">' + esc(meta) + '</span>' +
         '<span class="track' + (P.playing && blind ? ' is-blind' : '') + '">' + blocks + '</span></button>';
     }).join('') || '<div class="empty">Sumá emisoras desde la pestaña Emisoras.</div>';
+    $('#memNote').textContent = !P.playing ? '' : 'RADIA conoce ' + knownAds() + ' avisos de estas radios. Aprende uno cuando se repite o cuando tocás “Esto es publicidad”.';
     $('#radarKey').hidden = !list.length; $('#keyLive').textContent = 'El vivo, ' + lookahead() + ' s adelante';
     // contadores
     $('#stAvoided').textContent = mmss(S.stats.avoided); $('#stSwitches').textContent = S.stats.switches;
@@ -536,7 +566,7 @@
               return (scanning ? 'Revisando radios, ' + seen + ' de ' + all.length + '. ' : seen ? ok + ' de ' + seen + ' radios revisadas dejan anticipar sus tandas' + (PX() ? ' con el puente. ' : '; el resto necesita el puente (Ajustes). ') : '') + 'Primero van las que permiten cambio automático. '; })()) + 'Streams del directorio abierto radio-browser.info.';
   }
   function renderSettings() {
-    $('#delay').value = S.delay; $('#delayVal').textContent = S.delay + ' s'; $('#proxy').value = S.proxy; $('#proxy').placeholder = BRIDGE || 'https://tu-puente.workers.dev';
+    $('#agg').checked = !!S.agg; $('#delay').value = S.delay; $('#delayVal').textContent = S.delay + ' s'; $('#proxy').value = S.proxy; $('#proxy').placeholder = BRIDGE || 'https://tu-puente.workers.dev';
   }
   function renderAll() { paint(); renderStations(); renderSettings(); }
 
@@ -561,9 +591,9 @@
   $('#btnPlay').onclick = () => { stopPreview(); P.playing ? stop() : play(); };
   $('#btnAd').onclick = () => {
     const cur = curChan(); if (!cur) return;
-    cur.brain.markAd(P.ctx.currentTime - cur.delay); DG.marks.push([Math.round(P.ctx.currentTime), P.chans.indexOf(cur)]);
+    const heard = P.ctx.currentTime - cur.delay; cur.brain.markAd(heard); if (cur.mem) cur.mem.teach(heard); DG.marks.push([Math.round(P.ctx.currentTime), P.chans.indexOf(cur)]);
     sched(cur.id).observe(new Date().getMinutes(), true, 30);
-    toast('Anotado. RADIA lo usa para aprender los horarios de ' + cur.st.name + '.');
+    toast(cur.mem ? 'Aprendido. La próxima vez que suene este aviso, RADIA lo corta sola.' : 'Anotado. Esta radio no se puede analizar, así que RADIA solo aprende su horario.');
   };
   $('#btnNext').onclick = () => {
     if (!P.playing) return; const i = P.chans.indexOf(curChan());
@@ -590,6 +620,7 @@
     save(); restart(); renderAll();
   };
   $('#search').oninput = renderStations;
+  $('#agg').onchange = e => { S.agg = e.target.checked; save(); restart(); renderAll(); };
   $('#delay').oninput = e => { S.delay = +e.target.value; $('#delayVal').textContent = S.delay + ' s'; };
   $('#delay').onchange = () => { save(); restart(); paint(); };
   $('#proxy').onchange = e => { S.proxy = e.target.value.trim(); save(); restart(); renderAll(); scan(true); };
@@ -605,11 +636,11 @@
     toast(name + ' agregada.'); renderAll();
   };
   $('#reload').onclick = () => { loadCatalog(true).then(ok => toast(ok ? 'Lista actualizada.' : 'No se pudo actualizar desde acá.')); };
-  $('#reset').onclick = () => { S.sched = {}; for (const k in scheds) delete scheds[k]; S.stats = { avoided: 0, heard: 0, switches: 0 }; save(); renderAll(); toast('Aprendizaje borrado.'); };
+  $('#reset').onclick = () => { stop(); db().then(d => d.transaction('mem', 'readwrite').objectStore('mem').clear()).catch(() => {}); S.sched = {}; for (const k in scheds) delete scheds[k]; S.stats = { avoided: 0, heard: 0, switches: 0 }; save(); renderAll(); toast('Aprendizaje borrado.'); };
   $('#shDone').onclick = () => { $('#sheet').close(); restart(); };
   document.addEventListener('visibilitychange', () => { if (!document.hidden && P.playing && P.ctx.state !== 'running') P.ctx.resume().catch(() => {}); });
   window.addEventListener('hashchange', route);
-  window.addEventListener('pagehide', persist);
+  window.addEventListener('pagehide', () => { persist(); P.chans.forEach(saveMem); });
   setInterval(() => { if (P.playing) paint(); }, 250);
   route();
 })();
