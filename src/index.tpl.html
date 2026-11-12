@@ -22,6 +22,7 @@
     </div>
     <div class="radar" id="radar"></div>
     <div class="radar-key" id="radarKey"><span>Lo que oís</span><span id="keyLive">El vivo</span></div>
+    <p class="note" id="memNote"></p>
     <div class="controls">
       <button class="soft" id="btnAd" disabled>Esto es publicidad</button>
       <button class="play" id="btnPlay" aria-label="Reproducir"></button>
@@ -48,9 +49,12 @@
 
   <section class="view" id="v-ajustes">
     <header class="top"><h1>Ajustes</h1></header>
+    <p class="sect">Detección</p>
+    <div class="group"><div class="row"><label for="agg" style="flex:1">Detección estimada (experimental)</label><input type="checkbox" id="agg" style="width:22px;height:22px;accent-color:var(--accent)"></div></div>
+    <p class="note">RADIA reconoce cada aviso por su huella sonora: lo aprende cuando se repite o cuando tocás “Esto es publicidad”, y desde entonces lo corta sola. Es preciso, pero necesita haberlo oído antes. La detección estimada intenta además adivinar tandas nuevas por cómo suenan; atrapa más, pero se equivoca más.</p>
     <p class="sect">Anticipación</p>
-    <div class="group"><div class="row"><input type="range" id="delay" min="20" max="60" step="5" aria-label="Segundos de anticipación"><label id="delayVal" for="delay"></label></div></div>
-    <p class="note">RADIA necesita oír unos 30 segundos de tanda para reconocerla. Con este margen, después del primer cambio escuchás demorado y la tanda se corta antes de llegarte.</p>
+    <div class="group"><div class="row"><input type="range" id="delay" min="30" max="90" step="5" aria-label="Segundos de anticipación"><label id="delayVal" for="delay"></label></div></div>
+    <p class="note">Después del primer cambio escuchás con este retraso. Ese margen le da tiempo a RADIA para reconocer el aviso antes de que te llegue.</p>
     <p class="sect">Puente de audio (opcional)</p>
     <div class="group"><div class="row"><input class="field is-left" id="proxy" type="url" inputmode="url" placeholder="https://tu-puente.ejemplo" aria-label="Dirección del puente"></div></div>
     <p class="note">Muchas radios no dejan que el navegador analice su audio, y sin análisis no hay cambio automático. El puente (gratis en Cloudflare, carpeta puente) lo resuelve para todas.</p>
@@ -64,7 +68,7 @@
     <div class="group">
       <div class="row"><button class="link" id="diag">Copiar diagnóstico</button></div>
       <div class="row"><button class="link" id="reload">Actualizar lista de emisoras</button></div>
-      <div class="row"><button class="link is-danger" id="reset">Borrar horarios aprendidos y contadores</button></div>
+      <div class="row"><button class="link is-danger" id="reset">Borrar todo lo aprendido</button></div>
     </div>
     <p class="note">Además de tus emisoras, RADIA mantiene lista una radio de reserva, la de mejor match, por si todas las tuyas caen en tanda a la vez. RADIA anota en este dispositivo a qué minutos pasa la tanda cada emisora. Nada sale de acá.</p>
   </section>
@@ -85,6 +89,7 @@
 <script>/*ENGINE*/</script>
 <script>/*STATIONS*/</script>
 <script>/*STREAM*/</script>
+<script>/*FP*/</script>
 <script>/*APP*/</script>
 </body>
 </html>
