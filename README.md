@@ -48,7 +48,20 @@ El puente solo acepta los servidores de las radios del catálogo. No está proba
 
 En iPhone, Safari y Chrome comparten motor, y ese motor tiene un defecto conocido (WebKit 180696): cuando una radio en vivo se conecta al analizador, suena bien pero el analizador recibe solo ceros. Por eso RADIA no usa el reproductor del navegador para las radios analizables: baja el stream, lo parte en cuadros MP3 o AAC (`src/stream.js`), lo decodifica y lo reproduce con Web Audio, empalmando los trozos con un fundido de 8 ms. Si la radio no da permiso de lectura, cae al reproductor del navegador y suena sin análisis.
 
-## Cómo detecta la tanda (v2)
+## Cómo reconoce la publicidad: huella acústica
+
+Es la técnica de Shazam y de los sistemas de monitoreo de radio, y la base de Adblock Radio: un aviso se emite muchas veces y siempre suena igual.
+
+- `src/fp.js` convierte el audio en unas 21 huellas de 32 bits por segundo (Haitsma-Kalker) y recuerda lo escuchado de cada radio (unas 3 horas, guardadas en el dispositivo).
+- Si un tramo de entre 6 y 100 s vuelve a sonar con al menos 10 minutos de diferencia, es un aviso y entra en la biblioteca de esa radio. Las repeticiones largas (canciones) no cuentan, aunque una cortina las interrumpa.
+- Un aviso de la biblioteca se reconoce en sus primeros 2 o 3 segundos y se sabe cuándo termina.
+- El botón "Esto es publicidad" guarda la huella de lo que suena: un toque alcanza para reconocerlo la próxima vez.
+- Límite: un aviso que nunca sonó antes no se reconoce. Para eso está la "detección estimada" (Ajustes), apagada por defecto porque adivina por cómo suena y se equivoca más.
+
+Pruebas con audio realista (voces sintetizadas con música, codificadas por separado): `python3 tools_fixtures.py` y luego `node --test tests/*.test.js`.
+
+## Detección estimada (experimental, apagada por defecto)
+
 
 Las radios procesan el audio para que todo suene parejo, así que el volumen no delata la publicidad. RADIA mide cada segundo la forma del sonido (8 bandas) y busca cortes de timbre. Una tanda es una sucesión de segmentos cortos (6 a 45 s) de sonido distinto que no vuelve al sonido anterior. Necesita oír unos 30 s para confirmarla; por eso el margen es de 45 s.
 
