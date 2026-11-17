@@ -44,6 +44,16 @@ Sin análisis de audio no hay cambio automático, y muchas radios no dejan que e
 
 El puente solo acepta los servidores de las radios del catálogo. No está probado todavía contra las radios reales.
 
+### Conocimiento compartido (base D1, también gratis)
+
+El mismo Worker guarda los avisos que aprenden los usuarios, para que todos se beneficien (solo huellas acústicas de ~2 KB y el id de la emisora, nunca audio). Un aviso vale para todos recién cuando lo confirman 3 dispositivos distintos desde 2 redes distintas; si 3 usuarios reportan "¿No era publicidad?", se bloquea.
+
+1. En Cloudflare: Storage & Databases, D1, Create database, nombre `radia`.
+2. En el Worker: Settings, Bindings, Add, D1 database, variable `DB`, elegir `radia`, Deploy. Las tablas se crean solas.
+3. Abrir `https://<tu-worker>.workers.dev/health`: debe decir `ok db`.
+
+Probado con SQLite como D1 (`tests/lib.test.mjs`) y de punta a punta con navegadores (`tests/e2e/shared.mjs`): 3 dispositivos aprenden, uno nuevo escucha 14 s de avisos en 140 s contra 78 s sin lo compartido. Falta probarlo en Cloudflare real.
+
 ## Motor de audio propio (necesario en iPhone)
 
 En iPhone, Safari y Chrome comparten motor, y ese motor tiene un defecto conocido (WebKit 180696): cuando una radio en vivo se conecta al analizador, suena bien pero el analizador recibe solo ceros. Por eso RADIA no usa el reproductor del navegador para las radios analizables: baja el stream, lo parte en cuadros MP3 o AAC (`src/stream.js`), lo decodifica y lo reproduce con Web Audio, empalmando los trozos con un fundido de 8 ms. Si la radio no da permiso de lectura, cae al reproductor del navegador y suena sin análisis.
