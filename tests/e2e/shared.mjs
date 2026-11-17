@@ -37,7 +37,7 @@ async function device(browser, name, share) {
   await ctx.route(u => /\/s\?u=/.test(u.href) && !/127\.0\.0\.1/.test(decodeURIComponent(u.search)), r => r.abort());   // el catálogo real no existe en el entorno de prueba
   pg.on('pageerror', e => log(name, 'ERROR de página:', e.message)); pg.on('response', r => { if (r.status() >= 400 && !globalThis.__seen?.has(r.url())) { (globalThis.__seen ??= new Set()).add(r.url()); log(name, r.status(), r.url().slice(0, 120)); } }); pg.on('console', m => { if (false) log(name, 'consola:', m.text().slice(0, 160)); });
   await pg.addInitScript(REC); await pg.addInitScript(s => { if (!localStorage.getItem('radia.v1')) localStorage.setItem('radia.v1', s); }, mkState(share));
-  await pg.goto('http://127.0.0.1:8902/'); await pg.click('#btnPlay'); log(name, 'reproduciendo'); return { name, ctx, pg };
+  await pg.goto('http://127.0.0.1:8902/'); await pg.evaluate(() => { window.__radia.excl = 5; }); await pg.click('#btnPlay'); log(name, 'reproduciendo'); return { name, ctx, pg };
 }
 const snap = d => d.pg.evaluate(() => ({ rec: { ...window.__rec }, libs: window.__radia.P.chans.map(c => c.mem ? c.mem.library.map(l => ({ k: l.kind, sid: !!l.sid, sh: !!l.shared, n: l.fps.length })) : null) }));
 const srv = await start(8901, { MIN_DEVICES: '3' }); await listen(radio, 8903); await listen(page, 8902);
