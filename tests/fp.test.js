@@ -71,3 +71,16 @@ test('el historial de lo escuchado sobrevive entre sesiones: un aviso oído ayer
   const ev = air(b, 'e2', 50).filter(e => e.type === 'ad');
   assert.strictEqual(ev.length, 2, JSON.stringify(ev));
 });
+
+test('compartido: similar tolera recortes distintos; addShared evita duplicados; syncShared bloquea', () => {
+  const { AdMemory, similar, encode64, decode64 } = require('../src/fp.js');
+  let x = 12345; const rnd = () => (x = (Math.imul(x, 1103515245) + 12345) >>> 0);
+  const A = new Uint32Array(400).map(rnd), B = A.slice(30, 390), C = new Uint32Array(400).map(rnd);
+  assert.ok(similar(A, B)); assert.ok(!similar(A, C));
+  assert.deepStrictEqual(Array.from(decode64(encode64(A))), Array.from(A));
+  const m = new AdMemory({ cap: 1 << 14 }); m._addLib({ id: 1, kind: 'ad', hits: 1, at: 0, fps: A.slice() });
+  m.addShared('s'.repeat(24), B); assert.strictEqual(m.library.length, 1); assert.strictEqual(m.library[0].sid, 's'.repeat(24));
+  m.addShared('t'.repeat(24), C); assert.strictEqual(m.library.length, 2); m.addShared('t'.repeat(24), C); assert.strictEqual(m.library.length, 2);
+  m.syncShared([], ['t'.repeat(24)]); assert.strictEqual(m.library[1].kind, 'off');
+  const m2 = new AdMemory({ cap: 1 << 14 }); m2.importLibrary(m.exportLibrary()); assert.strictEqual(m2.library.length, 2); assert.strictEqual(m2.library[1].kind, 'off'); assert.ok(m2.library[0].shared);
+});

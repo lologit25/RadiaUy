@@ -46,10 +46,11 @@
   const BRIDGE = '';                       // dirección del puente incluida en esta publicación (vacío = sin puente)
   const IN_CLAUDE = /claude|anthropic/i.test(location.hostname) || /claude/i.test(document.referrer);
   const DEF = () => ({ mode: 'live', favs: { live: [] }, main: { live: null },
-    delay: 60, v: 4, agg: false, proxy: '', profiles: {}, custom: [], sched: {}, probe: {}, stats: { avoided: 0, heard: 0, switches: 0 }, catalog: [], catalogAt: 0 });
+    delay: 60, v: 4, agg: false, share: true, dev: '', proxy: '', profiles: {}, custom: [], sched: {}, probe: {}, stats: { avoided: 0, heard: 0, switches: 0 }, catalog: [], catalogAt: 0 });
   let S = DEF();
   try { const j = JSON.parse(localStorage.getItem(KEY) || 'null'); if (j && j.favs && j.main) { S = Object.assign(S, j); S.probe = S.probe || {}; S.mode = 'live'; if (j.v !== 4) { S.delay = 60; S.v = 4; S.agg = false; } } } catch (e) { /* sin almacenamiento: se sigue en memoria */ }
   const save = () => { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { /* idem */ } };
+  if (!/^[0-9a-f]{32}$/.test(S.dev || '')) { S.dev = Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, '0')).join(''); save(); }
   const PX = () => S.proxy || BRIDGE;
   const lookahead = () => S.delay;
   const scheds = {};
@@ -233,11 +234,46 @@
       const d = await db(), rec = await new Promise((res, rej) => { const q = d.transaction('mem').objectStore('mem').get(ch.id); q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error); });
       if (rec && !ch.gone) { ch.mem.importLibraryRaw(rec.lib); ch.mem.importHistoryRaw(rec.hist); }
     } catch (e) { /* sin almacenamiento: aprende solo durante esta sesión */ }
-    ch.memReady = true;
+    ch.memReady = true; pullShared(ch);
+  }
+  // ---------- conocimiento compartido (servidor del puente: solo huellas y el id de la emisora, nunca audio) ----------
+  const shareable = ch => !!(S.share && PX() && ch.mem && /^uy-[0-9a-z]{4,16}$/.test(ch.id));
+  async function api(path, body) {
+    const ac = new AbortController(), t = setTimeout(() => ac.abort(), 10000);
+    try { const r = await fetch(PX().replace(/\/$/, '') + path, body ? { method: 'POST', body: JSON.stringify(body), signal: ac.signal } : { signal: ac.signal }); if (!r.ok) throw new Error(r.status); return await r.json(); }
+    finally { clearTimeout(t); }
+  }
+  async function pullShared(ch) {
+    if (!shareable(ch) || !ch.memReady || ch.gone) return;
+    try { const r = await api('/lib?station=' + ch.id); ch.sharedAt = Date.now(); if (!ch.gone && ch.mem.syncShared(r.trusted, r.blocked)) saveMem(ch); } catch (e) { /* sin red o sin servidor: sigue con lo local */ }
+  }
+  /** Sube un aviso aprendido aquí. Si otro dispositivo ya subió el mismo, lo confirma en vez de duplicarlo. */
+  async function share(ch, id) {
+    if (!shareable(ch)) return; const lib = ch.mem.library.find(l => l.id === id);
+    if (!lib || lib.sent || lib.sid || lib.kind !== 'ad') return; lib.sent = true;
+    try {
+      const c = await api('/cand?station=' + ch.id), twin = c.cands.find(x => { try { return FP.similar(lib.fps, FP.decode64(x.fps)); } catch (e) { return false; } });
+      const r = await api('/vote', Object.assign({ station: ch.id, dev: S.dev }, twin ? { confirm: [twin.id] } : { add: [{ fps: FP.encode64(lib.fps) }] }));
+      lib.sid = twin ? twin.id : r.ids[0]; lib.voted = true; if (!lib.sid) lib.sent = false;
+    } catch (e) { lib.sent = false; }
+    saveMem(ch);
+  }
+  /** Dos dispositivos que suben el mismo aviso a la vez crean dos candidatos: se confirman todos los parecidos y se baja lo ya confiable. */
+  async function reconcile(ch) {
+    if (!shareable(ch) || !ch.memReady || ch.gone) return;
+    try {
+      const mine = ch.mem.library.filter(l => l.sid && !l.shared && l.kind === 'ad');
+      if (mine.length) {
+        const c = await api('/cand?station=' + ch.id), ids = [];
+        for (const l of mine) for (const x of c.cands) if (x.id !== l.sid && !ids.includes(x.id)) { try { if (FP.similar(l.fps, FP.decode64(x.fps))) ids.push(x.id); } catch (e) { /* dañado */ } }
+        if (ids.length) await api('/vote', { station: ch.id, dev: S.dev, confirm: ids.slice(0, 10) });
+      }
+    } catch (e) { /* idem */ }
+    if (!ch.sharedAt || Date.now() - ch.sharedAt > 9e5 || ch.mem.library.some(l => l.sid && !l.shared)) pullShared(ch);
   }
   async function saveMem(ch) {
     if (!ch.mem || !ch.memReady) return;
-    try { const d = await db(); d.transaction('mem', 'readwrite').objectStore('mem').put({ at: Date.now(), lib: ch.mem.library.map(l => ({ id: l.id, kind: l.kind, hits: l.hits, at: l.at, manual: !!l.manual, fps: l.fps })), hist: ch.mem.exportHistoryRaw() }, ch.id); }
+    try { const d = await db(); d.transaction('mem', 'readwrite').objectStore('mem').put({ at: Date.now(), lib: ch.mem.library.map(l => ({ id: l.id, kind: l.kind, hits: l.hits, at: l.at, manual: !!l.manual, sid: l.sid || null, shared: !!l.shared, sent: !!l.sent, voted: !!l.voted, fps: l.fps })), hist: ch.mem.exportHistoryRaw() }, ch.id); }
     catch (e) { /* idem */ }
   }
   /** El reconocedor avisa: aviso reconocido (con inicio y fin), fin corregido o aviso recién aprendido. */
@@ -248,8 +284,11 @@
       const gap = window.__radia.gap == null ? 45 : window.__radia.gap;                                   // un hueco corto entre dos avisos conocidos es otro aviso de la misma tanda
       if (prev && e.s - prev.e > .5 && e.s - prev.e <= gap) iv.push({ s: prev.e, e: e.s, src: 'gap' });
       iv.push({ s: e.s, e: e.e, src: 'fp', id: e.id });
+      if (e.src === 'rep') { share(ch, e.id); setTimeout(() => reconcile(ch), 20000); }
+    } else if (e.type === 'learned') { share(ch, e.id); setTimeout(() => reconcile(ch), 20000);
     } else if (e.type === 'end') { const v = iv.find(x => x.src === 'fp' && x.id === e.id && Math.abs(x.s - e.s) < .01); if (v) v.e = e.e; }
   }
+  const sharedAds = () => P.chans.reduce((a, c) => a + (c.mem ? c.mem.library.filter(l => l.shared && l.kind === 'ad').length : 0), 0);
   const knownAds = () => P.chans.reduce((a, c) => a + (c.mem ? c.mem.library.length : 0), 0);
   function makeChan(st) {
     const ch = { id: st.id, st, ok: true, delay: 0, target: 0, category: catOf(st), brain: new E.Brain({ heur: !!S.agg }) };
@@ -385,6 +424,7 @@
       const txt = a.reason === 'ad' ? (f.ok === false || f.live === false ? f.st.name + ' quedó sin señal.' : t.tier ? 'Tus emisoras están en tanda.' : 'Tanda en ' + f.st.name + '.') + ' Pasamos a ' + t.st.name + (t.tier ? ' (reserva)' : '') + ', match ' + a.style.match + '%.'
         : a.reason === 'return' ? 'Terminó la tanda. Volvemos a ' + t.st.name + '.' : 'Elegiste ' + t.st.name + '.';
       log(txt); P.note = { at: Date.now(), text: txt }; media();
+      if (a.reason === 'ad') { const v = f.brain.iv.filter(x => x.src === 'fp').pop(); if (v && f.mem) { P.lastAd = { ch: f, id: v.id, at: Date.now() }; $('#noAd').hidden = false; clearTimeout(P.noAdT); P.noAdT = setTimeout(() => { $('#noAd').hidden = true; }, 45000); } }
     } else if (a.type === 'duck') { setGain(curChan(), .18, .8); log('Todas tus emisoras están en tanda. Bajamos el volumen.'); }
     else if (a.type === 'unduck') setGain(curChan(), 1, .8);
     paint();
@@ -394,6 +434,7 @@
     if (P.dir.inAd(cur, now)) S.stats.heard++;
     else if (cur !== main && (P.dir.inAd(main, now) || main.ok === false)) S.stats.avoided++;
     tendReserve(now);
+    if (Math.round(now) % 300 === 150) P.chans.forEach(reconcile);
     if (Math.round(now) % 120 === 0) P.chans.forEach(saveMem);
     diagTick(now);
     { const d = new Date(Date.now() - 8000); for (const ch of P.chans) if (ch.live) sched(ch.id).observe(d.getMinutes(), ch.brain.isAdAt(now - 8), 1); if (Math.round(now) % 30 === 0) persist(); }
@@ -526,7 +567,7 @@
         '<span class="lane-meta' + (m != null && m < 40 ? ' is-low' : '') + '">' + esc(meta) + '</span>' +
         '<span class="track' + (P.playing && blind ? ' is-blind' : '') + '">' + blocks + '</span></button>';
     }).join('') || '<div class="empty">Sumá emisoras desde la pestaña Emisoras.</div>';
-    $('#memNote').textContent = !P.playing ? '' : 'RADIA conoce ' + knownAds() + ' avisos de estas radios. Aprende uno cuando se repite o cuando tocás “Esto es publicidad”.';
+    $('#memNote').textContent = !P.playing ? '' : 'RADIA conoce ' + knownAds() + ' avisos de estas radios' + (sharedAds() ? ' (' + sharedAds() + ' compartidos por otros usuarios)' : '') + '. Aprende uno cuando se repite o cuando tocás “Esto es publicidad”.';
     $('#radarKey').hidden = !list.length; $('#keyLive').textContent = 'El vivo, ' + lookahead() + ' s adelante';
     // contadores
     $('#stAvoided').textContent = mmss(S.stats.avoided); $('#stSwitches').textContent = S.stats.switches;
@@ -566,7 +607,7 @@
               return (scanning ? 'Revisando radios, ' + seen + ' de ' + all.length + '. ' : seen ? ok + ' de ' + seen + ' radios revisadas dejan anticipar sus tandas' + (PX() ? ' con el puente. ' : '; el resto necesita el puente (Ajustes). ') : '') + 'Primero van las que permiten cambio automático. '; })()) + 'Streams del directorio abierto radio-browser.info.';
   }
   function renderSettings() {
-    $('#agg').checked = !!S.agg; $('#delay').value = S.delay; $('#delayVal').textContent = S.delay + ' s'; $('#proxy').value = S.proxy; $('#proxy').placeholder = BRIDGE || 'https://tu-puente.workers.dev';
+    $('#agg').checked = !!S.agg; $('#share').checked = !!S.share; $('#delay').value = S.delay; $('#delayVal').textContent = S.delay + ' s'; $('#proxy').value = S.proxy; $('#proxy').placeholder = BRIDGE || 'https://tu-puente.workers.dev';
   }
   function renderAll() { paint(); renderStations(); renderSettings(); }
 
@@ -620,6 +661,13 @@
     save(); restart(); renderAll();
   };
   $('#search').oninput = renderStations;
+  $('#share').onchange = e => { S.share = e.target.checked; save(); if (S.share) P.chans.forEach(pullShared); };
+  $('#noAd').onclick = () => {
+    const l = P.lastAd; $('#noAd').hidden = true; if (!l || !l.ch.mem) return;
+    const lib = l.ch.mem.disable(l.id); l.ch.brain.iv = l.ch.brain.iv.filter(v => v.id !== l.id); P.lastAd = null;
+    if (lib && lib.sid && shareable(l.ch)) api('/report', { station: l.ch.id, dev: S.dev, id: lib.sid }).catch(() => {});
+    saveMem(l.ch); toast('Listo. RADIA dejó de tratar eso como publicidad.');
+  };
   $('#agg').onchange = e => { S.agg = e.target.checked; save(); restart(); renderAll(); };
   $('#delay').oninput = e => { S.delay = +e.target.value; $('#delayVal').textContent = S.delay + ' s'; };
   $('#delay').onchange = () => { save(); restart(); paint(); };

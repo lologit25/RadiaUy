@@ -30,9 +30,11 @@ def song(secs, seed):
         y[i0:i1] += (np.sin(2 * np.pi * f * tt) + .5 * np.sin(4 * np.pi * f * tt)) * np.exp(-3 * tt)
     return norm(y + .4 * bed(n, 110, seed))
 ads = {i: ad(i) for i in range(1, 7)}; s1 = song(130, 5)
-def build(name, parts, offset, gain):
+def build(name, parts, offset, gain, tone=False):
     xs, marks, t = [], [], 0.0
-    for kind, x in parts: marks.append([kind, round(t, 2), round(t + len(x) / SR, 2)]); t += len(x) / SR; xs.append(x)
+    for kind, x in parts:
+        if tone and kind.startswith('ad'): x = x + .05 * np.sin(2 * np.pi * 2400 * np.arange(len(x)) / SR).astype(np.float32)   # marca audible solo para medir en las pruebas (fuera de la banda que analiza el reconocedor) marks.append([kind, round(t, 2), round(t + len(x) / SR, 2)]); t += len(x) / SR; xs.append(x)
+        marks.append([kind, round(t, 2), round(t + len(x) / SR, 2)]); t += len(x) / SR; xs.append(x)
     x = np.concatenate(xs) * gain; w = wave.open(f'{out}/{name}.wav', 'wb'); w.setnchannels(1); w.setsampwidth(2); w.setframerate(SR); w.writeframes((np.clip(x, -1, 1) * 32000).astype('<i2').tobytes()); w.close()
     subprocess.run(['ffmpeg', '-loglevel', 'error', '-y', '-i', f'{out}/{name}.wav', '-codec:a', 'libmp3lame', '-b:a', '64k', f'{out}/{name}.mp3'], check=True)
     subprocess.run(['ffmpeg', '-loglevel', 'error', '-y', '-ss', str(offset), '-i', f'{out}/{name}.mp3', '-ac', '1', '-ar', '44100', '-f', 'f32le', f'{out}/{name}.f32'], check=True)
@@ -50,3 +52,7 @@ json.dump(M, open(f'{out}/marks.json', 'w')); print(json.dumps(M))
 M['r1'] = build('r1', [P(30), A(1), A(2), P(30), A(2), A(1), P(25), A(1), P(25), A(2), P(20)], 0.0, 1.0)
 M['r2'] = build('r2', [('prog', prog(260, 'es+f3'))], 0.0, 1.0)
 json.dump(M, open(f'{out}/marks.json', 'w')); print('r1', json.dumps(M['r1']))
+# Para la prueba de conocimiento compartido: dos tandas (1,2 y luego 2,1). La versión 'r3t' lleva una marca de 2,4 kHz solo en los avisos, para medir cuánta publicidad llega al oído.
+M['r3'] = build('r3', [P(15), A(1), A(2), P(20), A(2), A(1), P(35)], 0.0, 1.0)
+M['r3t'] = build('r3t', [P(15), A(1), A(2), P(20), A(2), A(1), P(35)], 0.0, 1.0, tone=True)
+json.dump(M, open(f'{out}/marks.json', 'w')); print('r3', json.dumps(M['r3']))

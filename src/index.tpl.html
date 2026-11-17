@@ -19,6 +19,7 @@
       <h2 id="npName">RADIA</h2>
       <p class="np-sub" id="npSub"></p>
       <p class="status" id="status" role="status" aria-live="polite"></p>
+      <button class="link" id="noAd" hidden>¿No era publicidad? Avisar</button>
     </div>
     <div class="radar" id="radar"></div>
     <div class="radar-key" id="radarKey"><span>Lo que oís</span><span id="keyLive">El vivo</span></div>
@@ -51,6 +52,8 @@
     <header class="top"><h1>Ajustes</h1></header>
     <p class="sect">Detección</p>
     <div class="group"><div class="row"><label for="agg" style="flex:1">Detección estimada (experimental)</label><input type="checkbox" id="agg" style="width:22px;height:22px;accent-color:var(--accent)"></div></div>
+    <div class="group"><div class="row"><label for="share" style="flex:1">Compartir lo aprendido con otros usuarios</label><input type="checkbox" id="share" style="width:22px;height:22px;accent-color:var(--accent)"></div></div>
+    <p class="note">Se comparten solo huellas acústicas de avisos (no audio) y la emisora, de forma anónima. Un aviso solo vale para todos cuando lo confirman varios dispositivos. Requiere el puente.</p>
     <p class="note">RADIA reconoce cada aviso por su huella sonora: lo aprende cuando se repite o cuando tocás “Esto es publicidad”, y desde entonces lo corta sola. Es preciso, pero necesita haberlo oído antes. La detección estimada intenta además adivinar tandas nuevas por cómo suenan; atrapa más, pero se equivoca más.</p>
     <p class="sect">Anticipación</p>
     <div class="group"><div class="row"><input type="range" id="delay" min="30" max="90" step="5" aria-label="Segundos de anticipación"><label id="delayVal" for="delay"></label></div></div>

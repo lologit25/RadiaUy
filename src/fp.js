@@ -60,6 +60,19 @@
   const b64 = u32 => { const b = new Uint8Array(u32.buffer, u32.byteOffset, u32.byteLength); let s = ''; for (let i = 0; i < b.length; i += 8192) s += String.fromCharCode.apply(null, b.subarray(i, i + 8192)); return btoa(s); };
   const unb64 = s => { const r = atob(s), b = new Uint8Array(r.length); for (let i = 0; i < r.length; i++) b[i] = r.charCodeAt(i); return new Uint32Array(b.buffer, 0, b.length >> 2); };
 
+  /** Mejor coincidencia entre dos huellas desplazando una respecto de la otra hasta maxShift cuadros. Pide solapar al menos el 80 % de la más corta y 60 cuadros. */
+  function alignBer(A, B, maxShift) {
+    let best = { ber: 1, shift: 0 }; const min = Math.min(A.length, B.length);
+    for (let s = -maxShift; s <= maxShift; s++) {
+      const ia = s > 0 ? s : 0, ib = s < 0 ? -s : 0, n = Math.min(A.length - ia, B.length - ib);
+      if (n < 60 || n < .8 * min) continue;
+      const e = ber(A, ia, B, ib, n); if (e < best.ber) best = { ber: e, shift: s };
+    }
+    return best;
+  }
+  /** ¿Son el mismo aviso aunque cada dispositivo lo haya recortado distinto? */
+  const similar = (A, B) => alignBer(A, B, 90).ber < .25;
+
   class AdMemory {
     constructor(o = {}) {
       this.o = Object.assign({ cap: 1 << 19, block: 64, step: 8, thr: .25, keep: .33, minAd: 6, maxAd: 100, excl: 600, lost: 2.5, bridge: 15, fd: HOP / 5512.5 }, o);
@@ -189,14 +202,31 @@
       if ((g1 - g0) * this.o.fd >= this.o.minAd) { const lib = this._learn(g0, g1, 'ad'); lib.manual = true; this._emit({ type: 'learned', id: lib.id }); }
     }
     // ---- guardar y recuperar ----
-    exportLibrary() { return this.library.map(l => ({ id: l.id, kind: l.kind, hits: l.hits, at: l.at, manual: !!l.manual, fps: b64(l.fps) })); }
-    importLibrary(arr) { for (const l of arr || []) { try { this._addLib({ id: l.id, kind: l.kind, hits: l.hits || 1, at: l.at || 0, manual: !!l.manual, fps: unb64(l.fps).slice() }); } catch (e) { /* entrada dañada */ } } }
-    importLibraryRaw(arr) { for (const l of arr || []) if (l && l.fps && l.fps.length) this._addLib({ id: l.id, kind: l.kind || 'ad', hits: l.hits || 1, at: l.at || 0, manual: !!l.manual, fps: l.fps }); }
+    exportLibrary() { return this.library.map(l => ({ id: l.id, kind: l.kind, hits: l.hits, at: l.at, manual: !!l.manual, sid: l.sid || null, shared: !!l.shared, sent: !!l.sent, voted: !!l.voted, fps: b64(l.fps) })); }
+    importLibrary(arr) { for (const l of arr || []) { try { if (l && l.fps) this.importLibraryRaw([Object.assign({}, l, { fps: unb64(l.fps).slice() })]); } catch (e) { /* entrada dañada */ } } }
+    importLibraryRaw(arr) { for (const l of arr || []) if (l && l.fps && l.fps.length && !(l.sid && this.library.some(x => x.sid === l.sid))) this._addLib({ id: l.id, kind: l.kind || 'ad', hits: l.hits || 1, at: l.at || 0, manual: !!l.manual, sid: l.sid || null, shared: !!l.shared, sent: !!l.sent, voted: !!l.voted, fps: l.fps }); }
+    // ---- biblioteca compartida ----
+    /** Incorpora un aviso confiable bajado del servidor. Si ya se había aprendido localmente (recortado distinto), solo se lo marca. */
+    addShared(sid, fps) {
+      if (this.library.some(l => l.sid === sid)) return null;
+      const twin = this.library.find(l => l.kind !== 'off' && similar(l.fps, fps));
+      if (twin) { if (!twin.sid) { twin.sid = sid; twin.shared = true; twin.sent = true; } else if (!twin.shared) twin.shared = true; return null; }
+      const lib = this._addLib({ id: ++this.seq, kind: 'ad', hits: 0, at: Date.now(), manual: false, sid, shared: true, sent: true, voted: true, fps: fps.slice() });
+      return lib;
+    }
+    /** Apaga un aviso local (el usuario dijo que no era publicidad, o el servidor lo bloqueó). */
+    disable(id) { const l = this.library.find(x => x.id === id); if (l) l.kind = 'off'; return l || null; }
+    syncShared(trusted, blocked) {
+      let added = 0;
+      for (const t of trusted || []) { try { if (this.addShared(t.id, unb64(t.fps))) added++; } catch (e) { /* dañado */ } }
+      for (const id of blocked || []) for (const l of this.library) if (l.sid === id) l.kind = 'off';
+      return added;
+    }
     exportHistory(maxFrames) { const n = Math.min(maxFrames || this.o.cap, this.n, this.o.cap), u = new Uint32Array(n); for (let i = 0; i < n; i++) u[i] = this._at(this.n - n + i); return b64(u); }
     importHistory(s) { let u; try { u = unb64(s); } catch (e) { return; } this._break(); for (let i = 0; i < u.length; i++) { const g = this.n; this.h[g % this.o.cap] = u[i]; this.ht[g % this.o.cap] = -1; if (g % 4 === 0) this._insert(u[i], g); this.n++; } this.seg0 = this.n; }
     exportHistoryRaw(maxFrames) { const n = Math.min(maxFrames || this.o.cap, this.n, this.o.cap), u = new Uint32Array(n); for (let i = 0; i < n; i++) u[i] = this._at(this.n - n + i); return u; }
     importHistoryRaw(u) { if (!u || !u.length) return; this._break(); for (let i = 0; i < u.length; i++) { const g = this.n; this.h[g % this.o.cap] = u[i]; this.ht[g % this.o.cap] = -1; if (g % 4 === 0) this._insert(u[i], g); this.n++; } this.seg0 = this.cover = this.n; }
     stats() { return { avisos: this.library.filter(l => l.kind === 'ad').length, minutos: Math.round(Math.min(this.n, this.o.cap) * this.o.fd / 60) }; }
   }
-  return { Fingerprinter, AdMemory, ber, fft, HOP, N };
+  return { Fingerprinter, AdMemory, ber, fft, alignBer, similar, encode64: b64, decode64: unb64, HOP, N };
 });
